@@ -162,6 +162,26 @@ public class SqlCompilerImplTest extends AbstractCairoTest {
     }
 
     @Test
+    public void testAddColumnTypeInterval() throws Exception {
+        ddl("create table x (a varchar)");
+        assertException(
+                "alter table x add column b interval",
+                27,
+                "non-persisted type: interval"
+        );
+    }
+
+    @Test
+    public void testAlterColumnTypeToInterval() throws Exception {
+        ddl("create table x (a varchar)");
+        assertException(
+                "alter table x alter column a type interval",
+                34,
+                "non-persisted type: interval"
+        );
+    }
+
+    @Test
     public void testCannotCreateTable() throws Exception {
         assertException(
                 new TestFilesFacadeImpl() {
@@ -1933,6 +1953,11 @@ public class SqlCompilerImplTest extends AbstractCairoTest {
     }
 
     @Test
+    public void testComentOnlyQuery() throws Exception {
+        assertSql("\n", "/* comment */");
+    }
+
+    @Test
     public void testCompareStringAndChar() throws Exception {
         assertMemoryLeak(() -> {
             // constant
@@ -2851,7 +2876,7 @@ public class SqlCompilerImplTest extends AbstractCairoTest {
 
             @Override
             public long mmap(long fd, long len, long offset, int flags, int memoryTag) {
-                if (mapCount++ == 6) {
+                if (mapCount++ == 7) {
                     return -1;
                 }
                 return super.mmap(fd, len, offset, flags, memoryTag);
@@ -3461,6 +3486,15 @@ public class SqlCompilerImplTest extends AbstractCairoTest {
     }
 
     @Test
+    public void testCreateTableWithInterval() throws Exception {
+        assertException(
+                "create table x (a varchar, b interval)",
+                29,
+                "non-persisted type: interval"
+        );
+    }
+
+    @Test
     public void testCreateTableWithO3() throws Exception {
         assertMemoryLeak(() -> {
             ddl(
@@ -3536,11 +3570,7 @@ public class SqlCompilerImplTest extends AbstractCairoTest {
 
     @Test
     public void testEmptyQuery() throws Exception {
-        assertException(
-                "                        ",
-                0,
-                "empty query"
-        );
+        assertSql("\n", "                        ");
     }
 
     @Test
@@ -4640,7 +4670,7 @@ public class SqlCompilerImplTest extends AbstractCairoTest {
 
             @Override
             public long mmap(long fd, long len, long offset, int flags, int memoryTag) {
-                if (inError.get() && pageCount++ == 14) {
+                if (inError.get() && pageCount++ == 15) {
                     return -1;
                 }
                 return super.mmap(fd, len, offset, flags, memoryTag);

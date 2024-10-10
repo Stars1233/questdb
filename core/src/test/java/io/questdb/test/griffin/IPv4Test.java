@@ -82,7 +82,7 @@ public class IPv4Test extends AbstractCairoTest {
 
             sqlExecutionContext.getBindVariableService().clear();
             sqlExecutionContext.getBindVariableService().setStr("ip", "foobar");
-            assertException("x where b = :ip", 0, "invalid ipv4 format: foobar");
+            assertException("x where b = :ip", 0, "invalid IPv4 format: foobar");
         });
     }
 
@@ -852,11 +852,11 @@ public class IPv4Test extends AbstractCairoTest {
 
     @Test
     public void testGreaterThanEqIPv4BadStr() throws Exception {
-        assertMemoryLeak(() -> assertSql(
-                "column\n" +
-                        "false\n",
-                "select ipv4 '34.11.45.3' >= ipv4 'apple'"
-        ));
+        assertException(
+                "select ipv4 '34.11.45.3' >= ipv4 'apple'",
+                33,
+                "invalid IPv4 constant"
+        );
     }
 
     @Test
@@ -1003,105 +1003,16 @@ public class IPv4Test extends AbstractCairoTest {
                         "\n" +
                         "\n" +
                         "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
-                        "\n" +
                         "\n",
-                "select ip & ipv4 'apple' from test",
+                "select ip & cast(s as ipv4) from test",
                 "create table test as " +
                         "(" +
                         "  select" +
                         "    rnd_int(1,20,0)::ipv4 ip," +
                         "    rnd_int(0,1000,0) bytes," +
+                        "    'apple' s," +
                         "    timestamp_sequence(0,100000000) k" +
-                        "  from long_sequence(100)" +
+                        "  from long_sequence(10)" +
                         ") ",
                 null,
                 true,
@@ -1111,11 +1022,11 @@ public class IPv4Test extends AbstractCairoTest {
 
     @Test
     public void testIPv4BitwiseAndFailsConst() throws Exception {
-        assertMemoryLeak(() -> assertSql(
-                "column\n" +
-                        "\n",
-                "select ipv4 '1.1.1.1' & ipv4 '0.0.1'"
-        ));
+        assertException(
+                "select ipv4 '1.1.1.1' & ipv4 '0.0.1'",
+                29,
+                "invalid IPv4 constant"
+        );
     }
 
     @Test
@@ -1363,20 +1274,20 @@ public class IPv4Test extends AbstractCairoTest {
     }
 
     @Test
+    public void testIPv4BitwiseFails() throws Exception {
+        assertException(
+                "select ~ ipv4 'apple'",
+                14,
+                "invalid IPv4 constant"
+        );
+    }
+
+    @Test
     public void testIPv4BitwiseNotConst() throws Exception {
         assertMemoryLeak(() -> assertSql(
                 "column\n" +
                         "254.254.254.254\n",
                 "select ~ ipv4 '1.1.1.1'"
-        ));
-    }
-
-    @Test
-    public void testIPv4BitwiseNotFails() throws Exception {
-        assertMemoryLeak(() -> assertSql(
-                "column\n" +
-                        "\n",
-                "select ~ ipv4 'apple'"
         ));
     }
 
@@ -1763,24 +1674,39 @@ public class IPv4Test extends AbstractCairoTest {
             insert("insert into test values('255.255.255.255')");
             insert("insert into test values('0.0.0.0')");
 
-            TestUtils.assertSql(engine, sqlExecutionContext, "select * from test where col <<= '12.67.50.2/20'", sink, "col\n");
-            TestUtils.assertSql(engine, sqlExecutionContext, "select * from test where col <<= '12.67.50.2/1'", sink, "col\n" +
-                    "12.67.45.3\n" +
-                    "1.6.2.0\n" +
-                    "\n");
-            TestUtils.assertSql(engine, sqlExecutionContext, "select * from test where col <<= '255.6.8.10/8'", sink, "col\n" +
-                    "255.255.255.255\n");
-            TestUtils.assertSql(engine, sqlExecutionContext, "select * from test where col <<= '12.67.50.2/0'", sink, "col\n" +
-                    "12.67.45.3\n" +
-                    "160.5.22.8\n" +
-                    "240.110.88.22\n" +
-                    "1.6.2.0\n" +
-                    "255.255.255.255\n" +
-                    "\n");
-            TestUtils.assertSql(engine, sqlExecutionContext, "select * from test where col <<= '1.6.2.0/32'", sink, "col\n" +
-                    "1.6.2.0\n");
-            TestUtils.assertSql(engine, sqlExecutionContext, "select * from test where col <<= '1.6.2.0'", sink, "col\n" +
-                    "1.6.2.0\n");
+            assertSql("col\n", "select * from test where col <<= '12.67.50.2/20'");
+            assertSql(
+                    "col\n" +
+                            "12.67.45.3\n" +
+                            "1.6.2.0\n" +
+                            "\n",
+                    "select * from test where col <<= '12.67.50.2/1'"
+            );
+            assertSql(
+                    "col\n" +
+                            "255.255.255.255\n",
+                    "select * from test where col <<= '255.6.8.10/8'"
+            );
+            assertSql(
+                    "col\n" +
+                            "12.67.45.3\n" +
+                            "160.5.22.8\n" +
+                            "240.110.88.22\n" +
+                            "1.6.2.0\n" +
+                            "255.255.255.255\n" +
+                            "\n",
+                    "select * from test where col <<= '12.67.50.2/0'"
+            );
+            assertSql(
+                    "col\n" +
+                            "1.6.2.0\n",
+                    "select * from test where col <<= '1.6.2.0/32'"
+            );
+            assertSql(
+                    "col\n" +
+                            "1.6.2.0\n",
+                    "select * from test where col <<= '1.6.2.0'"
+            );
         });
     }
 
@@ -1811,13 +1737,33 @@ public class IPv4Test extends AbstractCairoTest {
                             "0.0.0.218\n" +
                             "0.0.0.34\n" +
                             "0.0.0.90\n" +
-                            "\n" +
-                            "0.0.0.161\n" +
-                            "0.0.0.188\n" +
+                            "0.0.0.114\n" +
+                            "0.0.0.23\n" +
+                            "0.0.0.150\n" +
+                            "0.0.0.147\n" +
                             "\n" +
                             "0.0.0.29\n" +
                             "0.0.0.159\n",
                     "select * from test where ip <<= '0.0.0/24'"
+            );
+        });
+    }
+
+    @Test
+    public void testIPv4ContainsEqSubnetColumnInput() throws Exception {
+        assertMemoryLeak(() -> {
+            ddl("create table test as (select rnd_int(1,2,0)::ipv4 ip, rnd_str(null,'0.0.0.1','0.0.0.1/24','0.0.0.1/32') subnet from long_sequence(20))");
+            assertSql(
+                    "ip\tsubnet\n" +
+                            "0.0.0.2\t0.0.0.1/24\n" +
+                            "0.0.0.2\t0.0.0.1/24\n" +
+                            "0.0.0.1\t0.0.0.1\n" +
+                            "0.0.0.2\t0.0.0.1/24\n" +
+                            "0.0.0.1\t0.0.0.1/24\n" +
+                            "0.0.0.1\t0.0.0.1/24\n" +
+                            "0.0.0.1\t0.0.0.1\n" +
+                            "0.0.0.1\t0.0.0.1\n",
+                    "select * from test where ip <<= subnet"
             );
         });
     }
@@ -2029,8 +1975,76 @@ public class IPv4Test extends AbstractCairoTest {
                             "0.0.0.4\n" +
                             "0.0.0.4\n" +
                             "0.0.0.4\n" +
+                            "0.0.0.4\n" +
+                            "0.0.0.4\n" +
                             "0.0.0.4\n",
                     "select * from test where ip <<= '0.0.0.4'"
+            );
+        });
+    }
+
+    @Test
+    public void testIPv4ContainsEqSubnetVarchar() throws Exception {
+        assertMemoryLeak(() -> {
+            ddl("create table test (col ipv4)");
+            insert("insert into test values('12.67.45.3')");
+            insert("insert into test values('160.5.22.8')");
+            insert("insert into test values('240.110.88.22')");
+            insert("insert into test values('1.6.2.0')");
+            insert("insert into test values('255.255.255.255')");
+            insert("insert into test values('0.0.0.0')");
+
+            assertSql("col\n", "select * from test where col <<= '12.67.50.2/20'::varchar");
+            assertSql(
+                    "col\n" +
+                            "12.67.45.3\n" +
+                            "1.6.2.0\n" +
+                            "\n",
+                    "select * from test where col <<= '12.67.50.2/1'::varchar"
+            );
+            assertSql(
+                    "col\n" +
+                            "255.255.255.255\n",
+                    "select * from test where col <<= '255.6.8.10/8'::varchar"
+            );
+            assertSql(
+                    "col\n" +
+                            "12.67.45.3\n" +
+                            "160.5.22.8\n" +
+                            "240.110.88.22\n" +
+                            "1.6.2.0\n" +
+                            "255.255.255.255\n" +
+                            "\n",
+                    "select * from test where col <<= '12.67.50.2/0'::varchar"
+            );
+            assertSql(
+                    "col\n" +
+                            "1.6.2.0\n",
+                    "select * from test where col <<= '1.6.2.0/32'::varchar"
+            );
+            assertSql(
+                    "col\n" +
+                            "1.6.2.0\n",
+                    "select * from test where col <<= '1.6.2.0'::varchar"
+            );
+        });
+    }
+
+    @Test
+    public void testIPv4ContainsEqSubnetVarcharColumnInput() throws Exception {
+        assertMemoryLeak(() -> {
+            ddl("create table test as (select rnd_int(1,2,0)::ipv4 ip, rnd_varchar(null,'0.0.0.1','0.0.0.1/24','0.0.0.1/32') subnet from long_sequence(20))");
+            assertSql(
+                    "ip\tsubnet\n" +
+                            "0.0.0.2\t0.0.0.1/24\n" +
+                            "0.0.0.2\t0.0.0.1/24\n" +
+                            "0.0.0.1\t0.0.0.1\n" +
+                            "0.0.0.2\t0.0.0.1/24\n" +
+                            "0.0.0.1\t0.0.0.1/24\n" +
+                            "0.0.0.1\t0.0.0.1/24\n" +
+                            "0.0.0.1\t0.0.0.1\n" +
+                            "0.0.0.1\t0.0.0.1\n",
+                    "select * from test where ip <<= subnet"
             );
         });
     }
@@ -2068,6 +2082,59 @@ public class IPv4Test extends AbstractCairoTest {
                             "0.0.0.2\n" +
                             "0.0.0.1\n",
                     "select * from test where ip << '0.0.0.1/24'"
+            );
+        });
+    }
+
+    @Test
+    public void testIPv4ContainsSubnet4() throws Exception {
+        assertMemoryLeak(() -> {
+            ddl("create table test as (select rnd_int(1,2,0)::ipv4 ip, rnd_str(null,'0.0.0.1','0.0.0.1/24','0.0.0.1/32') subnet from long_sequence(20))");
+            assertSql(
+                    "ip\tsubnet\n" +
+                            "0.0.0.2\t0.0.0.1/24\n" +
+                            "0.0.0.2\t0.0.0.1/24\n" +
+                            "0.0.0.2\t0.0.0.1/24\n" +
+                            "0.0.0.1\t0.0.0.1/24\n" +
+                            "0.0.0.1\t0.0.0.1/24\n",
+                    "select * from test where ip << subnet"
+            );
+        });
+    }
+
+    @Test
+    public void testIPv4ContainsVarcharSubnet1() throws Exception {
+        assertMemoryLeak(() -> {
+            ddl("create table test as (select rnd_int(1,2,0)::ipv4 ip from long_sequence(10))");
+            assertSql(
+                    "ip\n" +
+                            "0.0.0.2\n" +
+                            "0.0.0.2\n" +
+                            "0.0.0.1\n" +
+                            "0.0.0.1\n" +
+                            "0.0.0.1\n" +
+                            "0.0.0.2\n" +
+                            "0.0.0.1\n" +
+                            "0.0.0.2\n" +
+                            "0.0.0.2\n" +
+                            "0.0.0.1\n",
+                    "select * from test where ip << '0.0.0.1/24'::varchar"
+            );
+        });
+    }
+
+    @Test
+    public void testIPv4ContainsVarcharSubnet2() throws Exception {
+        assertMemoryLeak(() -> {
+            ddl("create table test as (select rnd_int(1,2,0)::ipv4 ip, rnd_varchar(null,'0.0.0.1','0.0.0.1/24','0.0.0.1/32') subnet from long_sequence(20))");
+            assertSql(
+                    "ip\tsubnet\n" +
+                            "0.0.0.2\t0.0.0.1/24\n" +
+                            "0.0.0.2\t0.0.0.1/24\n" +
+                            "0.0.0.2\t0.0.0.1/24\n" +
+                            "0.0.0.1\t0.0.0.1/24\n" +
+                            "0.0.0.1\t0.0.0.1/24\n",
+                    "select * from test where ip << subnet"
             );
         });
     }
@@ -2123,6 +2190,9 @@ public class IPv4Test extends AbstractCairoTest {
 
             assertSql(
                     "ip\n" +
+                            "0.0.0.1\n" +
+                            "0.0.0.1\n" +
+                            "0.0.0.1\n" +
                             "0.0.0.1\n",
                     "select * from test where ipv4 '0.0.0.1' = ip"
             );
@@ -2136,25 +2206,22 @@ public class IPv4Test extends AbstractCairoTest {
 
             assertSql(
                     "ip\n" +
+                            "0.0.0.5\n" +
+                            "0.0.0.2\n" +
+                            "\n" +
+                            "0.0.0.4\n" +
+                            "0.0.0.5\n" +
+                            "0.0.0.4\n" +
+                            "0.0.0.4\n" +
+                            "0.0.0.4\n" +
                             "\n" +
                             "0.0.0.5\n" +
                             "0.0.0.4\n" +
-                            "\n" +
+                            "0.0.0.2\n" +
+                            "0.0.0.2\n" +
                             "0.0.0.4\n" +
-                            "0.0.0.5\n" +
-                            "0.0.0.4\n" +
-                            "\n" +
-                            "0.0.0.5\n" +
-                            "\n" +
                             "0.0.0.3\n" +
-                            "0.0.0.2\n" +
-                            "\n" +
-                            "0.0.0.5\n" +
-                            "0.0.0.4\n" +
-                            "0.0.0.2\n" +
-                            "0.0.0.2\n" +
-                            "\n" +
-                            "\n",
+                            "0.0.0.5\n",
                     "select * from test where ip != ipv4 '0.0.0.1'"
             );
         });
@@ -2167,25 +2234,22 @@ public class IPv4Test extends AbstractCairoTest {
 
             assertSql(
                     "ip\n" +
+                            "0.0.0.5\n" +
+                            "0.0.0.2\n" +
+                            "\n" +
+                            "0.0.0.4\n" +
+                            "0.0.0.5\n" +
+                            "0.0.0.4\n" +
+                            "0.0.0.4\n" +
+                            "0.0.0.4\n" +
                             "\n" +
                             "0.0.0.5\n" +
                             "0.0.0.4\n" +
-                            "\n" +
+                            "0.0.0.2\n" +
+                            "0.0.0.2\n" +
                             "0.0.0.4\n" +
-                            "0.0.0.5\n" +
-                            "0.0.0.4\n" +
-                            "\n" +
-                            "0.0.0.5\n" +
-                            "\n" +
                             "0.0.0.3\n" +
-                            "0.0.0.2\n" +
-                            "\n" +
-                            "0.0.0.5\n" +
-                            "0.0.0.4\n" +
-                            "0.0.0.2\n" +
-                            "0.0.0.2\n" +
-                            "\n" +
-                            "\n",
+                            "0.0.0.5\n",
                     "select * from test where ipv4 '0.0.0.1' != ip"
             );
         });
@@ -2198,25 +2262,6 @@ public class IPv4Test extends AbstractCairoTest {
 
             assertSql(
                     "ip\n" +
-                            "\n" +
-                            "\n" +
-                            "\n" +
-                            "\n" +
-                            "\n" +
-                            "\n" +
-                            "\n" +
-                            "\n" +
-                            "\n" +
-                            "\n" +
-                            "\n" +
-                            "\n" +
-                            "\n" +
-                            "\n" +
-                            "\n" +
-                            "\n" +
-                            "\n" +
-                            "\n" +
-                            "\n" +
                             "\n" +
                             "\n" +
                             "\n" +
@@ -2828,24 +2873,40 @@ public class IPv4Test extends AbstractCairoTest {
             insert("insert into test values('1.6.2.0')");
             insert("insert into test values('255.255.255.255')");
             insert("insert into test values('0.0.0.0')");
-            TestUtils.assertSql(engine, sqlExecutionContext, "select * from test where '12.67.50.2/20' >>= col", sink, "col\n");
-            TestUtils.assertSql(engine, sqlExecutionContext, "select * from test where '12.67.50.2/1' >>= col", sink, "col\n" +
-                    "12.67.45.3\n" +
-                    "1.6.2.0\n" +
-                    "\n");
-            TestUtils.assertSql(engine, sqlExecutionContext, "select * from test where '255.6.8.10/8' >>= col", sink, "col\n" +
-                    "255.255.255.255\n");
-            TestUtils.assertSql(engine, sqlExecutionContext, "select * from test where '12.67.50.2/0' >>= col", sink, "col\n" +
-                    "12.67.45.3\n" +
-                    "160.5.22.8\n" +
-                    "240.110.88.22\n" +
-                    "1.6.2.0\n" +
-                    "255.255.255.255\n" +
-                    "\n");
-            TestUtils.assertSql(engine, sqlExecutionContext, "select * from test where '1.6.2.0/32' >>= col", sink, "col\n" +
-                    "1.6.2.0\n");
-            TestUtils.assertSql(engine, sqlExecutionContext, "select * from test where '1.6.2.0' >>= col", sink, "col\n" +
-                    "1.6.2.0\n");
+
+            assertSql("col\n", "select * from test where '12.67.50.2/20' >>= col");
+            assertSql(
+                    "col\n" +
+                            "12.67.45.3\n" +
+                            "1.6.2.0\n" +
+                            "\n",
+                    "select * from test where '12.67.50.2/1' >>= col"
+            );
+            assertSql(
+                    "col\n" +
+                            "255.255.255.255\n",
+                    "select * from test where '255.6.8.10/8' >>= col"
+            );
+            assertSql(
+                    "col\n" +
+                            "12.67.45.3\n" +
+                            "160.5.22.8\n" +
+                            "240.110.88.22\n" +
+                            "1.6.2.0\n" +
+                            "255.255.255.255\n" +
+                            "\n",
+                    "select * from test where '12.67.50.2/0' >>= col"
+            );
+            assertSql(
+                    "col\n" +
+                            "1.6.2.0\n",
+                    "select * from test where '1.6.2.0/32' >>= col"
+            );
+            assertSql(
+                    "col\n" +
+                            "1.6.2.0\n",
+                    "select * from test where '1.6.2.0' >>= col"
+            );
         });
     }
 
@@ -2869,6 +2930,25 @@ public class IPv4Test extends AbstractCairoTest {
                             "0.0.0.184\n" +
                             "0.0.0.103\n",
                     "select * from test where '0.0.0/24' >>= ip"
+            );
+        });
+    }
+
+    @Test
+    public void testIPv4NegContainsEqSubnetColumnInput() throws Exception {
+        assertMemoryLeak(() -> {
+            ddl("create table test as (select rnd_int(1,2,0)::ipv4 ip, rnd_str(null,'0.0.0.1','0.0.0.1/24','0.0.0.1/32') subnet from long_sequence(20))");
+            assertSql(
+                    "ip\tsubnet\n" +
+                            "0.0.0.2\t0.0.0.1/24\n" +
+                            "0.0.0.2\t0.0.0.1/24\n" +
+                            "0.0.0.1\t0.0.0.1\n" +
+                            "0.0.0.2\t0.0.0.1/24\n" +
+                            "0.0.0.1\t0.0.0.1/24\n" +
+                            "0.0.0.1\t0.0.0.1/24\n" +
+                            "0.0.0.1\t0.0.0.1\n" +
+                            "0.0.0.1\t0.0.0.1\n",
+                    "select * from test where subnet >>= ip"
             );
         });
     }
@@ -3063,18 +3143,80 @@ public class IPv4Test extends AbstractCairoTest {
     @Test
     public void testIPv4NegContainsEqSubnetNoMask() throws Exception {
         assertMemoryLeak(() -> {
-            ddl("create table test as (select rnd_int(0,5,2)::ipv4 ip from long_sequence(100))");
+            ddl("create table test as (select rnd_int(0,5,2)::ipv4 ip from long_sequence(20))");
 
             assertSql(
                     "ip\n" +
                             "0.0.0.4\n" +
                             "0.0.0.4\n" +
-                            "0.0.0.4\n" +
-                            "0.0.0.4\n" +
-                            "0.0.0.4\n" +
-                            "0.0.0.4\n" +
                             "0.0.0.4\n",
                     "select * from test where '0.0.0.4' >>= ip"
+            );
+        });
+    }
+
+    @Test
+    public void testIPv4NegContainsEqSubnetVarchar() throws Exception {
+        assertMemoryLeak(() -> {
+            ddl("create table test (col ipv4)");
+            insert("insert into test values('12.67.45.3')");
+            insert("insert into test values('160.5.22.8')");
+            insert("insert into test values('240.110.88.22')");
+            insert("insert into test values('1.6.2.0')");
+            insert("insert into test values('255.255.255.255')");
+            insert("insert into test values('0.0.0.0')");
+
+            assertSql("col\n", "select * from test where '12.67.50.2/20'::varchar >>= col");
+            assertSql(
+                    "col\n" +
+                            "12.67.45.3\n" +
+                            "1.6.2.0\n" +
+                            "\n",
+                    "select * from test where '12.67.50.2/1'::varchar >>= col"
+            );
+            assertSql(
+                    "col\n" +
+                            "255.255.255.255\n",
+                    "select * from test where '255.6.8.10/8'::varchar >>= col"
+            );
+            assertSql(
+                    "col\n" +
+                            "12.67.45.3\n" +
+                            "160.5.22.8\n" +
+                            "240.110.88.22\n" +
+                            "1.6.2.0\n" +
+                            "255.255.255.255\n" +
+                            "\n",
+                    "select * from test where '12.67.50.2/0'::varchar >>= col"
+            );
+            assertSql(
+                    "col\n" +
+                            "1.6.2.0\n",
+                    "select * from test where '1.6.2.0/32'::varchar >>= col"
+            );
+            assertSql(
+                    "col\n" +
+                            "1.6.2.0\n",
+                    "select * from test where '1.6.2.0'::varchar >>= col"
+            );
+        });
+    }
+
+    @Test
+    public void testIPv4NegContainsEqSubnetVarcharColumnInput() throws Exception {
+        assertMemoryLeak(() -> {
+            ddl("create table test as (select rnd_int(1,2,0)::ipv4 ip, rnd_varchar(null,'0.0.0.1','0.0.0.1/24','0.0.0.1/32') subnet from long_sequence(20))");
+            assertSql(
+                    "ip\tsubnet\n" +
+                            "0.0.0.2\t0.0.0.1/24\n" +
+                            "0.0.0.2\t0.0.0.1/24\n" +
+                            "0.0.0.1\t0.0.0.1\n" +
+                            "0.0.0.2\t0.0.0.1/24\n" +
+                            "0.0.0.1\t0.0.0.1/24\n" +
+                            "0.0.0.1\t0.0.0.1/24\n" +
+                            "0.0.0.1\t0.0.0.1\n" +
+                            "0.0.0.1\t0.0.0.1\n",
+                    "select * from test where subnet >>= ip"
             );
         });
     }
@@ -3112,6 +3254,59 @@ public class IPv4Test extends AbstractCairoTest {
                             "0.0.0.2\n" +
                             "0.0.0.1\n",
                     "select * from test where '0.0.0.1/24' >> ip"
+            );
+        });
+    }
+
+    @Test
+    public void testIPv4NegContainsSubnet4() throws Exception {
+        assertMemoryLeak(() -> {
+            ddl("create table test as (select rnd_int(1,2,0)::ipv4 ip, rnd_str(null,'0.0.0.1','0.0.0.1/24','0.0.0.1/32') subnet from long_sequence(20))");
+            assertSql(
+                    "ip\tsubnet\n" +
+                            "0.0.0.2\t0.0.0.1/24\n" +
+                            "0.0.0.2\t0.0.0.1/24\n" +
+                            "0.0.0.2\t0.0.0.1/24\n" +
+                            "0.0.0.1\t0.0.0.1/24\n" +
+                            "0.0.0.1\t0.0.0.1/24\n",
+                    "select * from test where subnet >> ip"
+            );
+        });
+    }
+
+    @Test
+    public void testIPv4NegContainsVarcharSubnet1() throws Exception {
+        assertMemoryLeak(() -> {
+            ddl("create table test as (select rnd_int(1,2,0)::ipv4 ip from long_sequence(10))");
+            assertSql(
+                    "ip\n" +
+                            "0.0.0.2\n" +
+                            "0.0.0.2\n" +
+                            "0.0.0.1\n" +
+                            "0.0.0.1\n" +
+                            "0.0.0.1\n" +
+                            "0.0.0.2\n" +
+                            "0.0.0.1\n" +
+                            "0.0.0.2\n" +
+                            "0.0.0.2\n" +
+                            "0.0.0.1\n",
+                    "select * from test where '0.0.0.1/24'::varchar >> ip"
+            );
+        });
+    }
+
+    @Test
+    public void testIPv4NegContainsVarcharSubnet2() throws Exception {
+        assertMemoryLeak(() -> {
+            ddl("create table test as (select rnd_int(1,2,0)::ipv4 ip, rnd_varchar(null,'0.0.0.1','0.0.0.1/24','0.0.0.1/32') subnet from long_sequence(20))");
+            assertSql(
+                    "ip\tsubnet\n" +
+                            "0.0.0.2\t0.0.0.1/24\n" +
+                            "0.0.0.2\t0.0.0.1/24\n" +
+                            "0.0.0.2\t0.0.0.1/24\n" +
+                            "0.0.0.1\t0.0.0.1/24\n" +
+                            "0.0.0.1\t0.0.0.1/24\n",
+                    "select * from test where subnet >> ip"
             );
         });
     }
@@ -4363,7 +4558,7 @@ public class IPv4Test extends AbstractCairoTest {
 
     @Test
     public void testImplicitCastStrIPv4BadStr() throws Exception {
-        assertException("select 'dhukdsvhiu' < ipv4 '1.1.1.1'", 0, "invalid ipv4 format: dhukdsvhiu");
+        assertException("select 'dhukdsvhiu' < ipv4 '1.1.1.1'", 0, "invalid IPv4 format: dhukdsvhiu");
     }
 
     @Test
@@ -5016,7 +5211,7 @@ public class IPv4Test extends AbstractCairoTest {
     public void testInvalidConstantInEqFilter() throws Exception {
         assertMemoryLeak(() -> {
             ddl("create table x (b ipv4)");
-            assertExceptionNoLeakCheck("x where b = 'foobar'", 0, "invalid ipv4 format: foobar");
+            assertExceptionNoLeakCheck("x where b = 'foobar'", 0, "invalid IPv4 format: foobar");
         });
     }
 
@@ -5415,6 +5610,70 @@ public class IPv4Test extends AbstractCairoTest {
     }
 
     @Test
+    public void testNetmaskColumnInput() throws Exception {
+        assertMemoryLeak(() -> {
+            ddl("create table test (msk string)");
+            insert("insert into test values ('255.255.255.255/30')");
+            insert("insert into test values ('255.255.255.255/31')");
+            insert("insert into test values ('255.255.255.255/32')");
+
+            assertSql(
+                    "netmask\n" +
+                            "255.255.255.252\n" +
+                            "255.255.255.254\n" +
+                            "255.255.255.255\n",
+                    "select netmask(msk) from test;"
+            );
+        });
+    }
+
+    @Test
+    public void testNetmaskVarchar() throws Exception {
+        assertMemoryLeak(() -> {
+            ddl("create table tipv4 (ip ipv4)");
+            insert("insert into tipv4 values ('255.255.255.254')");
+            assertSql("ip\n" +
+                    "255.255.255.254\n", "select * from tipv4 where '255.255.255.255/31'::varchar >>= ip");
+            assertSql("ip\n", "select * from tipv4 where '255.255.255.255/32'::varchar >>= ip");
+            assertSql("ip\n" +
+                    "255.255.255.254\n", "select * from tipv4 where '255.255.255.255/30'::varchar >>= ip");
+            assertSql("ip\n" +
+                    "255.255.255.254\n", "select * from tipv4 where '255.255.255.0/24'::varchar >>= ip");
+
+            assertSql("column\n" +
+                    "true\n", "select '255.255.255.255'::ipv4 <<= '255.255.255.255'::varchar");
+            assertSql("column\n" +
+                    "false\n", "select '255.255.255.255'::ipv4 <<= '255.255.255.254'::varchar");
+            assertSql("column\n" +
+                    "true\n", "select '255.255.255.255'::ipv4 <<= '255.255.255.254/31'::varchar");
+
+            assertSql("netmask\n\n", "select netmask('1.1.1.1/0'::varchar);");
+            assertSql("netmask\n255.255.255.252\n", "select netmask('1.1.1.1/30'::varchar);");
+            assertSql("netmask\n255.255.255.254\n", "select netmask('1.1.1.1/31'::varchar);");
+            assertSql("netmask\n255.255.255.255\n", "select netmask('1.1.1.1/32'::varchar);");
+            assertSql("netmask\n\n", "select netmask('1.1.1.1/33'::varchar);");
+        });
+    }
+
+    @Test
+    public void testNetmaskVarcharColumnInput() throws Exception {
+        assertMemoryLeak(() -> {
+            ddl("create table test (msk varchar)");
+            insert("insert into test values ('255.255.255.255/30')");
+            insert("insert into test values ('255.255.255.255/31')");
+            insert("insert into test values ('255.255.255.255/32')");
+
+            assertSql(
+                    "netmask\n" +
+                            "255.255.255.252\n" +
+                            "255.255.255.254\n" +
+                            "255.255.255.255\n",
+                    "select netmask(msk) from test;"
+            );
+        });
+    }
+
+    @Test
     public void testNull() throws Exception {
         assertMemoryLeak(() -> {
             ddl("create table x (b ipv4)");
@@ -5753,22 +6012,6 @@ public class IPv4Test extends AbstractCairoTest {
     }
 
     @Test
-    public void testStrColumnInContainsEqFilter() throws Exception {
-        assertMemoryLeak(() -> {
-            ddl("create table x (b ipv4, a string)");
-            assertExceptionNoLeakCheck("x where b <<= a", 14, "STRING constant expected");
-        });
-    }
-
-    @Test
-    public void testStrColumnInContainsFilter() throws Exception {
-        assertMemoryLeak(() -> {
-            ddl("create table x (b ipv4, a string)");
-            assertExceptionNoLeakCheck("x where b << a", 13, "STRING constant expected");
-        });
-    }
-
-    @Test
     public void testStrColumnInEqFilter() throws Exception {
         assertMemoryLeak(() -> {
             ddl("create table x (b ipv4, a string)");
@@ -5789,22 +6032,6 @@ public class IPv4Test extends AbstractCairoTest {
         assertMemoryLeak(() -> {
             ddl("create table x (b ipv4, a string)");
             assertExceptionNoLeakCheck("x where b > a", 12, "STRING constant expected");
-        });
-    }
-
-    @Test
-    public void testStrColumnInNegContainsEqFilter() throws Exception {
-        assertMemoryLeak(() -> {
-            ddl("create table x (b ipv4, a string)");
-            assertExceptionNoLeakCheck("x where a >>= b", 8, "STRING constant expected");
-        });
-    }
-
-    @Test
-    public void testStrColumnInNegContainsFilter() throws Exception {
-        assertMemoryLeak(() -> {
-            ddl("create table x (b ipv4, a string)");
-            assertExceptionNoLeakCheck("x where a >> b", 8, "STRING constant expected");
         });
     }
 
@@ -5837,11 +6064,11 @@ public class IPv4Test extends AbstractCairoTest {
 
     @Test
     public void testStrIPv4CastOverflow() throws Exception {
-        assertMemoryLeak(() -> assertSql(
-                "cast\n" +
-                        "\n",
-                "select ipv4 '256.5.5.5'"
-        ));
+        assertException(
+                "select ipv4 '256.5.5.5'",
+                12,
+                "invalid IPv4 constant"
+        );
     }
 
     @Test
@@ -6053,128 +6280,23 @@ public class IPv4Test extends AbstractCairoTest {
                 "ip1\tip2\n" +
                         "0.0.0.1\t0.0.0.1\n" +
                         "0.0.0.2\t0.0.0.2\n" +
-                        "0.0.0.8\t0.0.0.8\n" +
-                        "0.0.0.3\t0.0.0.3\n" +
-                        "0.0.0.1\t0.0.0.1\n" +
-                        "0.0.0.3\t0.0.0.3\n" +
-                        "0.0.0.7\t0.0.0.7\n" +
-                        "\t\n" +
-                        "\t\n" +
-                        "\t\n" +
-                        "0.0.0.5\t0.0.0.5\n" +
-                        "0.0.0.9\t0.0.0.9\n" +
-                        "\t\n" +
-                        "\t\n" +
-                        "\t\n" +
-                        "0.0.0.4\t0.0.0.4\n" +
-                        "0.0.0.2\t0.0.0.2\n" +
-                        "0.0.0.9\t0.0.0.9\n" +
-                        "0.0.0.9\t0.0.0.9\n" +
-                        "\t\n" +
-                        "0.0.0.9\t0.0.0.9\n" +
-                        "0.0.0.8\t0.0.0.8\n" +
-                        "0.0.0.7\t0.0.0.7\n" +
-                        "\t\n" +
-                        "\t\n" +
-                        "\t\n" +
-                        "\t\n" +
-                        "\t\n" +
-                        "0.0.0.3\t0.0.0.3\n" +
-                        "0.0.0.6\t0.0.0.6\n" +
-                        "0.0.0.1\t0.0.0.1\n" +
-                        "0.0.0.4\t0.0.0.4\n" +
-                        "0.0.0.3\t0.0.0.3\n" +
-                        "\t\n" +
-                        "\t\n" +
-                        "0.0.0.4\t0.0.0.4\n" +
-                        "0.0.0.3\t0.0.0.3\n" +
-                        "\t\n" +
-                        "0.0.0.3\t0.0.0.3\n" +
-                        "0.0.0.1\t0.0.0.1\n" +
-                        "\t\n" +
-                        "0.0.0.9\t0.0.0.9\n" +
-                        "0.0.0.9\t0.0.0.9\n" +
-                        "0.0.0.7\t0.0.0.7\n" +
-                        "0.0.0.8\t0.0.0.8\n" +
-                        "0.0.0.4\t0.0.0.4\n" +
-                        "0.0.0.8\t0.0.0.8\n" +
-                        "\t\n" +
-                        "0.0.0.9\t0.0.0.9\n" +
-                        "0.0.0.8\t0.0.0.8\n" +
-                        "\t\n" +
-                        "0.0.0.4\t0.0.0.4\n" +
-                        "0.0.0.8\t0.0.0.8\n" +
-                        "0.0.0.6\t0.0.0.6\n" +
-                        "\t\n" +
-                        "0.0.0.1\t0.0.0.1\n" +
-                        "0.0.0.1\t0.0.0.1\n" +
-                        "\t\n" +
-                        "0.0.0.7\t0.0.0.7\n" +
-                        "0.0.0.8\t0.0.0.8\n" +
-                        "0.0.0.1\t0.0.0.1\n" +
-                        "\t\n" +
-                        "\t\n" +
-                        "0.0.0.7\t0.0.0.7\n" +
-                        "\t\n" +
-                        "0.0.0.5\t0.0.0.5\n" +
-                        "\t\n" +
-                        "0.0.0.8\t0.0.0.8\n" +
-                        "0.0.0.2\t0.0.0.2\n" +
-                        "0.0.0.6\t0.0.0.6\n" +
-                        "0.0.0.4\t0.0.0.4\n" +
-                        "0.0.0.7\t0.0.0.7\n" +
-                        "0.0.0.3\t0.0.0.3\n" +
-                        "0.0.0.2\t0.0.0.2\n" +
-                        "0.0.0.1\t0.0.0.1\n" +
-                        "\t\n" +
-                        "\t\n" +
-                        "0.0.0.9\t0.0.0.9\n" +
-                        "\t\n" +
-                        "\t\n" +
-                        "0.0.0.1\t0.0.0.1\n" +
-                        "\t\n" +
-                        "0.0.0.1\t0.0.0.1\n" +
-                        "0.0.0.7\t0.0.0.7\n" +
-                        "0.0.0.2\t0.0.0.2\n" +
-                        "\t\n" +
-                        "0.0.0.8\t0.0.0.8\n" +
-                        "0.0.0.9\t0.0.0.9\n" +
-                        "0.0.0.8\t0.0.0.8\n" +
-                        "0.0.0.6\t0.0.0.6\n" +
-                        "0.0.0.5\t0.0.0.5\n" +
-                        "0.0.0.7\t0.0.0.7\n" +
-                        "0.0.0.6\t0.0.0.6\n" +
-                        "\t\n" +
-                        "0.0.0.2\t0.0.0.2\n" +
-                        "0.0.0.5\t0.0.0.5\n" +
-                        "0.0.0.6\t0.0.0.6\n" +
-                        "\t\n" +
-                        "0.0.0.5\t0.0.0.5\n" +
-                        "\t\n" +
-                        "0.0.0.7\t0.0.0.7\n" +
-                        "\t\n" +
-                        "0.0.0.4\t0.0.0.4\n" +
-                        "0.0.0.2\t0.0.0.2\n" +
-                        "0.0.0.1\t0.0.0.1\n" +
-                        "0.0.0.7\t0.0.0.7\n" +
                         "0.0.0.5\t0.0.0.5\n" +
                         "0.0.0.3\t0.0.0.3\n" +
                         "0.0.0.1\t0.0.0.1\n" +
-                        "\t\n" +
-                        "0.0.0.6\t0.0.0.6\n" +
-                        "0.0.0.9\t0.0.0.9\n" +
+                        "0.0.0.7\t0.0.0.7\n" +
                         "0.0.0.1\t0.0.0.1\n" +
+                        "0.0.0.7\t0.0.0.7\n" +
+                        "\t\n" +
                         "0.0.0.5\t0.0.0.5\n" +
-                        "0.0.0.4\t0.0.0.4\n" +
-                        "0.0.0.6\t0.0.0.6\n" +
-                        "0.0.0.8\t0.0.0.8\n",
+                        "0.0.0.7\t0.0.0.7\n" +
+                        "\t\n",
                 "select * from test where ip1 = ip2",
                 "create table test as " +
                         "(" +
                         "  select" +
                         "    rnd_int(0,9,0)::ipv4 ip1," +
                         "    rnd_int(0,9,0)::ipv4 ip2" +
-                        "  from long_sequence(1000)" +
+                        "  from long_sequence(100)" +
                         ")",
                 null,
                 true,
@@ -6184,20 +6306,23 @@ public class IPv4Test extends AbstractCairoTest {
 
     @Test
     public void testWhereInvalidIPv4() throws Exception {
-        assertQuery(
-                "ip\tbytes\tk\n",
-                "select * from test where ip = ipv4 'hello'",
-                "create table test as " +
-                        "(" +
-                        "  select" +
-                        "    rnd_int(1,5,0)::ipv4 ip," +
-                        "    rnd_int(0,1000,0) bytes," +
-                        "    timestamp_sequence(0,100000000) k" +
-                        "  from long_sequence(100)" +
-                        ") timestamp(k)",
-                "k",
-                true,
-                false
-        );
+        assertMemoryLeak(() -> {
+            ddl(
+                    "create table test as " +
+                            "(" +
+                            "  select" +
+                            "    rnd_int(1,5,0)::ipv4 ip," +
+                            "    rnd_int(0,1000,0) bytes," +
+                            "    timestamp_sequence(0,100000000) k" +
+                            "  from long_sequence(100)" +
+                            ") timestamp(k)"
+            );
+
+            assertExceptionNoLeakCheck(
+                    "select * from test where ip = 'apple'",
+                    0,
+                    "invalid IPv4 format"
+            );
+        });
     }
 }

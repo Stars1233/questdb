@@ -1217,19 +1217,20 @@ public final class TestUtils {
         }
     }
 
-    public static TableWriter newOffPoolWriter(CairoConfiguration configuration, TableToken tableToken) {
-        return newOffPoolWriter(configuration, tableToken, Metrics.disabled());
+    public static TableWriter newOffPoolWriter(CairoConfiguration configuration, TableToken tableToken, CairoEngine engine) {
+        return newOffPoolWriter(configuration, tableToken, Metrics.disabled(), engine);
     }
 
-    public static TableWriter newOffPoolWriter(CairoConfiguration configuration, TableToken tableToken, Metrics metrics) {
-        return newOffPoolWriter(configuration, tableToken, metrics, new MessageBusImpl(configuration));
+    public static TableWriter newOffPoolWriter(CairoConfiguration configuration, TableToken tableToken, Metrics metrics, CairoEngine engine) {
+        return newOffPoolWriter(configuration, tableToken, metrics, new MessageBusImpl(configuration), engine);
     }
 
     public static TableWriter newOffPoolWriter(
             CairoConfiguration configuration,
             TableToken tableToken,
             Metrics metrics,
-            MessageBus messageBus
+            MessageBus messageBus,
+            CairoEngine engine
     ) {
         return new TableWriter(
                 configuration,
@@ -1241,7 +1242,8 @@ public final class TestUtils {
                 configuration.getRoot(),
                 DefaultDdlListener.INSTANCE,
                 () -> Numbers.LONG_NULL,
-                metrics
+                metrics,
+                engine
         );
     }
 
@@ -1344,10 +1346,18 @@ public final class TestUtils {
             path.of(root);
             FilesFacade ff = TestFilesFacadeImpl.INSTANCE;
             path.slash();
-            Assert.assertTrue("Test dir cleanup error: " + ff.errno(), !ff.exists(path.$()) || ff.rmdir(path.slash()));
+            if (ff.exists(path.$()) && !ff.rmdir(path, true)) {
+                StringSink dir = new StringSink();
+                dir.put(path.$());
+                Assert.fail("Test dir " + dir + " cleanup error: " + ff.errno());
+            }
 
             path.parent().concat(RESTORE_FROM_CHECKPOINT_TRIGGER_FILE_NAME);
-            Assert.assertTrue("Checkpoint trigger cleanup error: " + ff.errno(), !ff.exists(path.$()) || ff.removeQuiet(path.$()));
+            if (ff.exists(path.$()) && !ff.removeQuiet(path.$())) {
+                StringSink dir = new StringSink();
+                dir.put(path.$());
+                Assert.fail("Checkpoint dir " + dir + " trigger cleanup error:: " + ff.errno());
+            }
         }
     }
 
@@ -1761,7 +1771,7 @@ public final class TestUtils {
     static void addRecordToMap(StringSink sink, Record record, RecordMetadata metadata, Map<String, Integer> map, boolean genericStringMatch) {
         sink.clear();
         for (int i = 0, n = metadata.getColumnCount(); i < n; i++) {
-            CursorPrinter.printColumn(record, metadata, i, sink, genericStringMatch, true);
+            CursorPrinter.printColumn(record, metadata, i, sink, genericStringMatch, true, "<null>");
         }
         String printed = sink.toString();
         map.compute(printed, (s, i) -> {

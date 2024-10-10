@@ -43,6 +43,8 @@ import io.questdb.griffin.*;
 import io.questdb.griffin.engine.ops.AbstractOperation;
 import io.questdb.griffin.engine.ops.AlterOperation;
 import io.questdb.griffin.engine.ops.UpdateOperation;
+import io.questdb.griffin.engine.table.parquet.MappedMemoryPartitionDescriptor;
+import io.questdb.griffin.engine.table.parquet.ParquetCompression;
 import io.questdb.griffin.engine.table.parquet.PartitionDescriptor;
 import io.questdb.griffin.engine.table.parquet.PartitionEncoder;
 import io.questdb.log.Log;
@@ -85,6 +87,8 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
     // 3, oldPartitionSize
     // 4, flags (partitionMutates INT, isLastWrittenPartition INT)
     // 5. o3SplitPartitionSize size of "split" partition, new partition that branches out of the old one
+    // 6. original partition timestamp (before the split)
+    // 7. parquet partition file size
     // ... column top for every column
     public static final int PARTITION_SINK_SIZE_LONGS = 8;
     public static final int PARTITION_SINK_COL_TOP_OFFSET = PARTITION_SINK_SIZE_LONGS * Long.BYTES;
@@ -123,6 +127,7 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
     private final ObjList<ColumnIndexer> denseIndexers = new ObjList<>();
     private final ObjList<MapWriter> denseSymbolMapWriters;
     private final int detachedMkDirMode;
+    private final CairoEngine engine;
     private final FilesFacade ff;
     private final int fileOperationRetryCount;
     private final FrameFactory frameFactory;
@@ -238,7 +243,6 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
     private final ColumnTaskHandler cthO3ShiftColumnInLagToTopRef = this::cthO3ShiftColumnInLagToTop;
     private long tempMem16b = Unsafe.malloc(16, MemoryTag.NATIVE_TABLE_WRITER);
     private LongConsumer timestampSetter;
-    private LongList tmpIntList;
     private long todoTxn;
     private final FragileCode RECOVER_FROM_SYMBOL_MAP_WRITER_FAILURE = this::recoverFromSymbolMapWriterFailure;
     private final FragileCode RECOVER_FROM_SWAP_RENAME_FAILURE = this::recoverFromSwapRenameFailure;
@@ -257,7 +261,8 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
             CharSequence root,
             DdlListener ddlListener,
             DatabaseCheckpointStatus checkpointStatus,
-            Metrics metrics
+            Metrics metrics,
+            CairoEngine cairoEngine
     ) {
         LOG.info().$("open '").utf8(tableToken.getTableName()).$('\'').$();
         this.configuration = configuration;
@@ -276,6 +281,7 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
         this.fileOperationRetryCount = configuration.getFileOperationRetryCount();
         this.tableToken = tableToken;
         this.o3QuickSortEnabled = configuration.isO3QuickSortEnabled();
+        this.engine = cairoEngine;
         try {
             this.path = new Path().of(root);
             this.pathRootSize = path.size();
@@ -569,7 +575,7 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
 
         bumpMetadataAndColumnStructureVersion();
 
-        metadata.addColumn(columnName, columnType, isIndexed, indexValueBlockCapacity, columnIndex, isSequential, symbolCapacity, isDedupKey);
+        metadata.addColumn(columnName, columnType, isIndexed, indexValueBlockCapacity, columnIndex, isSequential, symbolCapacity, isDedupKey, symbolCacheFlag);
 
         if (!Os.isWindows()) {
             ff.fsyncAndClose(TableUtils.openRO(ff, path.$(), LOG));
@@ -578,6 +584,8 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
         if (securityContext != null) {
             ddlListener.onColumnAdded(securityContext, tableToken, columnName);
         }
+
+        engine.metadataCacheHydrateTable(metadata, true, true);
     }
 
     @Override
@@ -620,6 +628,7 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
         columnMetadata.setIndexed(true);
         columnMetadata.setIndexValueBlockCapacity(indexValueBlockSize);
 
+        engine.metadataCacheHydrateTable(metadata, true, true);
         LOG.info().$("ADDED index to '").utf8(columnName).$('[').$(ColumnType.nameOf(existingType)).$("]' to ").$substr(pathRootSize, path).$();
     }
 
@@ -822,10 +831,12 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
         final MapWriter symbolMapWriter = symbolMapWriters.getQuick(columnIndex);
         if (symbolMapWriter.isCached() != cache) {
             symbolMapWriter.updateCacheFlag(cache);
-        } else {
-            return;
+            TableWriterMetadata.WriterTableColumnMetadata columnMetadata = (TableWriterMetadata.WriterTableColumnMetadata) metadata.getColumnMetadata(columnIndex);
+            columnMetadata.setSymbolCached(cache);
+            updateMetaStructureVersion();
+            txWriter.bumpTruncateVersion();
+            engine.metadataCacheHydrateTable(metadata, true, true);
         }
-        updateMetaStructureVersion();
     }
 
     @Override
@@ -870,7 +881,6 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
                     .$(", to=").$(ColumnType.nameOf(newType)).I$();
 
             boolean isDedupKey = metadata.isDedupKey(existingColIndex);
-            boolean newColumnDedupKey = isDedupKey && !ColumnType.isVarSize(newType);
             int columnIndex = columnCount;
             long columnNameTxn = getTxn();
 
@@ -891,7 +901,7 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
                 convertOperator.convertColumn(columnName, existingColIndex, existingType, columnIndex, newType);
 
                 // Column converted, add new one to _meta file and remove the existing column
-                addColumnToMeta(columnName, newType, symbolCapacity, symbolCacheFlag, isIndexed, indexValueBlockCapacity, isSequential, newColumnDedupKey, columnNameTxn, existingColIndex);
+                addColumnToMeta(columnName, newType, symbolCapacity, symbolCacheFlag, isIndexed, indexValueBlockCapacity, isSequential, isDedupKey, columnNameTxn, existingColIndex);
 
                 // close old column files
                 freeColumnMemory(existingColIndex);
@@ -901,7 +911,7 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
 
                 // remove old column to in-memory metadata object and add new one
                 metadata.removeColumn(existingColIndex);
-                metadata.addColumn(columnName, newType, isIndexed, indexValueBlockCapacity, existingColIndex, isSequential, symbolCapacity, newColumnDedupKey);
+                metadata.addColumn(columnName, newType, isIndexed, indexValueBlockCapacity, existingColIndex, isSequential, symbolCapacity, isDedupKey, existingColIndex + 1, symbolCacheFlag); // by convention, replacingIndex is +1
 
                 // open new column files
                 if (txWriter.getTransientRowCount() > 0 || !PartitionBy.isPartitioned(partitionBy)) {
@@ -935,12 +945,7 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
                 // commit transaction to _txn file
                 bumpMetadataAndColumnStructureVersion();
 
-                if (isDeduplicationEnabled() && !newColumnDedupKey && isDedupKey) {
-                    // Converting a column that used to be a dedup column
-                    // to a type that is not supported to be a dedup key (var size)
-                    // effectively removes that column from being a dedup flag.
-                    dedupColumnCommitAddresses.setDedupColumnCount(dedupColumnCommitAddresses.getColumnCount() - 1);
-                }
+                engine.metadataCacheHydrateTable(metadata, true, true);
             } finally {
                 // clear temp resources
                 convertOperator.finishColumnConversion();
@@ -1132,20 +1137,22 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
             throw CairoException.nonCritical().put("partition folder does not exist [path=").put(path).put(']');
         }
 
+        // upgrade partition version
+        TableUtils.setPathForPartition(other.trimTo(pathSize), partitionBy, partitionTimestamp, getTxn());
+        TableUtils.createDirsOrFail(ff, other.slash(), configuration.getMkDirMode());
+        final int newPartitionFolderLen = other.size();
+
+        // set parquet file full path
+        TableUtils.setParquetPartitionPath(other.trimTo(pathSize), partitionBy, partitionTimestamp, getTxn());
+
         LOG.info().$("converting partition to parquet [path=").$substr(pathRootSize, path).I$();
-        if (tmpIntList == null) {
-            tmpIntList = new LongList();
-        } else {
-            tmpIntList.clear();
-        }
-        LongList fileDescriptors = tmpIntList;
         long parquetFileLength;
         try {
-            try (PartitionDescriptor partitionDescriptor = new PartitionDescriptor()) {
+            try (PartitionDescriptor partitionDescriptor = new MappedMemoryPartitionDescriptor()) {
 
                 final long partitionRowCount = getPartitionSize(partitionIndex);
                 final int timestampIndex = metadata.getTimestampIndex();
-                partitionDescriptor.of(getTableToken().getTableName(), partitionRowCount, timestampIndex, true);
+                partitionDescriptor.of(getTableToken().getTableName(), partitionRowCount, timestampIndex);
 
                 final int columnCount = metadata.getColumnCount();
                 for (int columnIndex = 0; columnIndex < columnCount; columnIndex++) {
@@ -1161,11 +1168,8 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
                             // Do not add the column to the parquet file if there are no rows
 
                             if (ColumnType.isSymbol(columnType)) {
-                                long columnFd = TableUtils.openRO(ff, dFile(path.trimTo(partitionLen), columnName, columnNameTxn), LOG);
-                                fileDescriptors.add(columnFd);
-
                                 long columnSize = columnRowCount * ColumnType.sizeOf(columnType);
-                                long columnAddr = TableUtils.mapRO(ff, columnFd, columnSize, memoryTag);
+                                long columnAddr = TableUtils.mapRO(ff, dFile(path.trimTo(partitionLen), columnName, columnNameTxn), LOG, columnSize, memoryTag);
 
                                 offsetFileName(path.trimTo(pathSize), columnName, columnNameTxn);
                                 if (!ff.exists(path.$())) {
@@ -1182,16 +1186,11 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
                                 final int symbolCount = getSymbolMapWriter(columnIndex).getSymbolCount();
                                 final long offsetsMemSize = SymbolMapWriter.keyToOffset(symbolCount + 1);
 
-                                final long symbolOffsetsFd = TableUtils.openRO(ff, path.$(), LOG);
-                                fileDescriptors.add(symbolOffsetsFd);
+                                long symbolOffsetsAddr = TableUtils.mapRO(ff, path.$(), LOG, offsetsMemSize, memoryTag);
 
-                                long symbolOffsetsAddr = TableUtils.mapRO(ff, symbolOffsetsFd, offsetsMemSize, memoryTag);
-
-                                long columnSecondaryFd = TableUtils.openRO(ff, charFileName(path.trimTo(pathSize), columnName, columnNameTxn), LOG);
-                                fileDescriptors.add(columnSecondaryFd);
-
-                                long columnSecondarySize = ff.length(columnSecondaryFd);
-                                long columnSecondaryAddr = TableUtils.mapRO(ff, columnSecondaryFd, columnSecondarySize, memoryTag);
+                                final LPSZ charFileName = charFileName(path.trimTo(pathSize), columnName, columnNameTxn);
+                                long columnSecondarySize = ff.length(charFileName);
+                                long columnSecondaryAddr = TableUtils.mapRO(ff, charFileName, LOG, columnSecondarySize, memoryTag);
 
                                 partitionDescriptor.addColumn(
                                         columnName,
@@ -1209,12 +1208,9 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
                                 // recover partition path
                                 setPathForPartition(path.trimTo(pathSize), partitionBy, partitionTimestamp, partitionNameTxn);
                             } else if (ColumnType.isVarSize(columnType)) {
-                                long auxFd = TableUtils.openRO(ff, iFile(path.trimTo(partitionLen), columnName, columnNameTxn), LOG);
-                                fileDescriptors.add(auxFd);
-
                                 final ColumnTypeDriver columnTypeDriver = ColumnType.getDriver(columnType);
                                 long auxVectorSize = columnTypeDriver.getAuxVectorSize(columnRowCount);
-                                long auxVectorAddr = TableUtils.mapRO(ff, auxFd, auxVectorSize, memoryTag);
+                                long auxVectorAddr = TableUtils.mapRO(ff, iFile(path.trimTo(partitionLen), columnName, columnNameTxn), LOG, auxVectorSize, memoryTag);
 
                                 long dataSize = columnTypeDriver.getDataVectorSizeAt(auxVectorAddr, columnRowCount - 1);
                                 if (dataSize < columnTypeDriver.getDataVectorMinEntrySize() || dataSize >= (1L << 40)) {
@@ -1222,10 +1218,7 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
                                     throw CairoException.critical(0).put("Invalid column size [column=").put(path).put(", size=").put(dataSize).put(']');
                                 }
 
-                                long dataFd = TableUtils.openRO(ff, dFile(path.trimTo(partitionLen), columnName, columnNameTxn), LOG);
-                                fileDescriptors.add(dataFd);
-
-                                long dataAddr = dataSize == 0 ? 0 : TableUtils.mapRO(ff, dataFd, dataSize, memoryTag);
+                                long dataAddr = dataSize == 0 ? 0 : TableUtils.mapRO(ff, dFile(path.trimTo(partitionLen), columnName, columnNameTxn), LOG, dataSize, memoryTag);
                                 partitionDescriptor.addColumn(
                                         columnName,
                                         columnType,
@@ -1239,10 +1232,8 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
                                         0
                                 );
                             } else {
-                                long fixedFd = TableUtils.openRO(ff, dFile(path.trimTo(partitionLen), columnName, columnNameTxn), LOG);
-                                fileDescriptors.add(fixedFd);
                                 long mapBytes = columnRowCount * ColumnType.sizeOf(columnType);
-                                long fixedAddr = TableUtils.mapRO(ff, fixedFd, mapBytes, memoryTag);
+                                long fixedAddr = TableUtils.mapRO(ff, dFile(path.trimTo(partitionLen), columnName, columnNameTxn), LOG, mapBytes, memoryTag);
                                 partitionDescriptor.addColumn(
                                         columnName,
                                         columnType,
@@ -1262,19 +1253,43 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
                     }
                 }
 
-                path.trimTo(partitionLen);
-                path.put(".parquet");
-                LOG.info().$("writing parquet [path=").$substr(pathRootSize, path).I$();
-                PartitionEncoder.encode(partitionDescriptor, path);
-                parquetFileLength = ff.length(path.$());
+                final CairoConfiguration config = this.getConfiguration();
+                final int compressionCodec = config.getPartitionEncoderParquetCompressionCodec();
+                final int compressionLevel = config.getPartitionEncoderParquetCompressionLevel();
+                final int rowGroupSize = config.getPartitionEncoderParquetRowGroupSize();
+                final int dataPageSize = config.getPartitionEncoderParquetDataPageSize();
+                final boolean statisticsEnabled = config.isPartitionEncoderParquetStatisticsEnabled();
+                final int parquetVersion = config.getPartitionEncoderParquetVersion();
+
+                PartitionEncoder.encodeWithOptions(
+                        partitionDescriptor,
+                        other,
+                        ParquetCompression.packCompressionCodecLevel(compressionCodec, compressionLevel),
+                        statisticsEnabled,
+                        rowGroupSize,
+                        dataPageSize,
+                        parquetVersion
+
+                );
+                parquetFileLength = ff.length(other.$());
             }
+        } catch (CairoException e) {
+            LOG.error().$("could not convert partition to parquet [table=").utf8(tableToken.getTableName())
+                    .$(", partition=").$ts(partitionTimestamp)
+                    .$(", error=").$(e.getMessage()).I$();
+
+            // rollback
+            if (!ff.rmdir(other.trimTo(newPartitionFolderLen).slash())) {
+                LOG.error().$("could not remove parquet file [path=").$(other).I$();
+            }
+            throw e;
         } finally {
             path.trimTo(pathSize);
-            for (int i = 0, n = fileDescriptors.size(); i < n; i++) {
-                ff.close(fileDescriptors.get(i));
-            }
-            fileDescriptors.clear();
+            other.trimTo(pathSize);
         }
+        final long originalSize = txWriter.getPartitionSize(partitionIndex);
+        // used to update txn and bump recordStructureVersion
+        txWriter.updatePartitionSizeAndTxnByRawIndex(partitionIndex * LONGS_PER_TX_ATTACHED_PARTITION, originalSize);
         txWriter.setPartitionParquetFormat(partitionTimestamp, parquetFileLength);
         txWriter.bumpPartitionTableVersion();
         txWriter.commit(denseSymbolMapWriters);
@@ -1282,7 +1297,8 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
         if (lastPartitionConverted) {
             closeActivePartition(false);
         }
-        // remove partition folder
+
+        // remove old partition folder
         safeDeletePartitionDir(partitionTimestamp, partitionNameTxn);
 
         if (lastPartitionConverted) {
@@ -1474,6 +1490,7 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
         checkDistressed();
         LOG.info().$("disabling row deduplication [table=").utf8(tableToken.getTableName()).I$();
         updateMetadataWithDeduplicationUpsertKeys(false, null);
+        engine.metadataCacheHydrateTable(metadata, true, true);
     }
 
     @Override
@@ -1525,7 +1542,11 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
             }
             // purge old column versions
             finishColumnPurge();
-            LOG.info().$("REMOVED index [txn=").$(txWriter.getTxn())
+            LOG.info().$("REMOVED index [txn=").$(txWriter.getTxn()).$();
+
+            engine.metadataCacheHydrateTable(metadata, true, true);
+
+            LOG.info().$("END DROP INDEX [txn=").$(txWriter.getTxn())
                     .$(", table=").utf8(tableToken.getTableName())
                     .$(", column=").utf8(columnName)
                     .I$();
@@ -1554,12 +1575,7 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
                 }
 
                 int columnType = metadata.getColumnType(dedupColIndex);
-                if (ColumnType.isVarSize(columnType)) {
-                    throw CairoException.critical(0).put("Unsupported column type used as deduplicate key [table=")
-                            .put(tableToken.getTableName())
-                            .put(", column=").put(getColumnNameSafe(dedupColIndex))
-                            .put(", columnType=").put(ColumnType.nameOf(columnType));
-                } else if (columnType < 0) {
+                if (columnType < 0) {
                     throw CairoException.critical(0).put("Invalid column used as deduplicate key, column is dropped [table=")
                             .put(tableToken.getTableName()).put(", columnIndex=").put(dedupColIndex);
                 }
@@ -1572,6 +1588,7 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
             logRec.I$();
         }
         updateMetadataWithDeduplicationUpsertKeys(true, columnsIndexes);
+        engine.metadataCacheHydrateTable(metadata, true, true);
     }
 
     public long getAppliedSeqTxn() {
@@ -1661,14 +1678,26 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
         return txWriter.getPartitionCount();
     }
 
+    public int getPartitionIndexByTimestamp(long timestamp) {
+        return txWriter.getPartitionIndex(timestamp);
+    }
+
     public long getPartitionNameTxn(int partitionIndex) {
         return txWriter.getPartitionNameTxn(partitionIndex);
+    }
+
+    public long getPartitionNameTxnByPartitionTimestamp(long partitionTimestamp) {
+        return txWriter.getPartitionNameTxnByPartitionTimestamp(partitionTimestamp, -1L);
     }
 
     public long getPartitionO3SplitThreshold() {
         long splitMinSizeBytes = configuration.getPartitionO3SplitMinSize();
         return splitMinSizeBytes /
                 (avgRecordSize != 0 ? avgRecordSize : (avgRecordSize = TableUtils.estimateAvgRecordSize(metadata)));
+    }
+
+    public long getPartitionParquetFileSize(int partitionIndex) {
+        return txWriter.getPartitionParquetFileSize(partitionIndex);
     }
 
     public long getPartitionSize(int partitionIndex) {
@@ -2319,6 +2348,8 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
         }
 
         finishColumnPurge();
+
+        engine.metadataCacheHydrateTable(metadata, true, true);
         LOG.info().$("REMOVED column '").utf8(name).$('[').$(ColumnType.nameOf(type)).$("]' from ").$substr(pathRootSize, path).$();
     }
 
@@ -2407,11 +2438,13 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
             ddlListener.onColumnRenamed(securityContext, tableToken, currentName, newName);
         }
 
+        engine.metadataCacheHydrateTable(metadata, true, true);
+
         LOG.info().$("RENAMED column '").utf8(currentName).$("' to '").utf8(newName).$("' from ").$substr(pathRootSize, path).$();
     }
 
     @Override
-    public void renameTable(@NotNull CharSequence fromNameTable, @NotNull CharSequence toTableName) {
+    public void renameTable(@NotNull CharSequence fromTableName, @NotNull CharSequence toTableName) {
         // table writer is not involved in concurrent table rename, the `fromTableName` must
         // always match tableWriter's table name
         LOG.debug().$("renaming table [path=").$substr(pathRootSize, path).$(", seqTxn=").$(txWriter.getSeqTxn()).I$();
@@ -2422,6 +2455,8 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
         }
         // Record column structure version bump in txn file for WAL sequencer structure version to match writer structure version.
         bumpColumnStructureVersion();
+
+        engine.metadataCacheHydrateTable(metadata, true, true);
     }
 
     @Override
@@ -2480,6 +2515,8 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
 
             finishMetaSwapUpdate();
             metadata.setMaxUncommittedRows(maxUncommittedRows);
+            engine.metadataCacheHydrateTable(metadata, true, true);
+
         } finally {
             ddlMem.close();
         }
@@ -2501,6 +2538,7 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
 
             finishMetaSwapUpdate();
             metadata.setO3MaxLag(o3MaxLagUs);
+            engine.metadataCacheHydrateTable(metadata, true, true);
         } finally {
             ddlMem.close();
         }
@@ -4530,30 +4568,65 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
                 for (int i = 0; i < metadata.getColumnCount(); i++) {
                     int columnType = metadata.getColumnType(i);
                     if (i != metadata.getTimestampIndex() && columnType > 0 && metadata.isDedupKey(i)) {
-                        int shl = ColumnType.pow2SizeOf(columnType);
-                        long lagMemOffset = lagRows > 0 ? (txWriter.getTransientRowCount() - getColumnTop(i)) << shl : 0L;
-                        long lagMapSize = lagRows << shl;
-
-                        // Map column buffers for lag rows for deduplication
-                        long lagKeyAddr = lagRows > 0 ? mapAppendColumnBuffer(columns.get(getPrimaryColumnIndex(i)), lagMemOffset, lagMapSize, false) : 0L;
-                        MemoryCR o3Column = o3Columns.get(getPrimaryColumnIndex(i));
-                        long o3ColumnData = o3Column.addressOf(0);
-                        assert o3ColumnData != 0;
-
-                        dedupColumnCommitAddresses.setArrayValues(
+                        long addr = DedupColumnCommitAddresses.setColValues(
                                 dedupCommitAddr,
                                 dedupKeyIndex++,
                                 columnType,
-                                ColumnType.sizeOf(columnType),
-                                0L,
-                                o3ColumnData,
-                                Math.abs(lagKeyAddr),
-                                lagKeyAddr,
-                                lagMemOffset,
-                                lagMapSize
+                                ColumnType.isVarSize(columnType) ? -1 : ColumnType.sizeOf(columnType),
+                                0L
                         );
+
+                        if (!ColumnType.isVarSize(columnType)) {
+                            int shl = ColumnType.pow2SizeOf(columnType);
+                            long lagMemOffset = lagRows > 0 ? (txWriter.getTransientRowCount() - getColumnTop(i)) << shl : 0L;
+                            long lagMapSize = lagRows << shl;
+
+                            // Map column buffers for lag rows for deduplication
+                            long lagKeyAddr = lagRows > 0 ? mapAppendColumnBuffer(columns.get(getPrimaryColumnIndex(i)), lagMemOffset, lagMapSize, false) : 0L;
+                            long o3ColumnData = o3Columns.get(getPrimaryColumnIndex(i)).addressOf(0);
+                            assert o3ColumnData != 0;
+
+                            DedupColumnCommitAddresses.setColAddressValues(addr, o3ColumnData);
+                            DedupColumnCommitAddresses.setO3DataAddressValues(addr, Math.abs(lagKeyAddr));
+                            DedupColumnCommitAddresses.setReservedValuesSet1(
+                                    addr,
+                                    lagKeyAddr,
+                                    lagMemOffset,
+                                    lagMapSize
+                            );
+                        } else {
+                            ColumnTypeDriver driver = ColumnType.getDriver(columnType);
+                            MemoryCR o3VarColumn = o3Columns.get(getPrimaryColumnIndex(i));
+                            long o3ColumnVarDataAddr = o3VarColumn.addressOf(0);
+                            long o3ColumnVarAuxAddr = o3Columns.get(getSecondaryColumnIndex(i)).addressOf(0);
+                            long o3ColumnVarDataSize = o3VarColumn.addressHi() - o3ColumnVarDataAddr;
+                            DedupColumnCommitAddresses.setColAddressValues(addr, o3ColumnVarAuxAddr, o3ColumnVarDataAddr, o3ColumnVarDataSize);
+
+                            if (lagRows > 0) {
+                                long roLo = txWriter.getTransientRowCount() - getColumnTop(i);
+                                long roHi = roLo + lagRows;
+
+                                long lagAuxOffset = driver.getAuxVectorOffset(roLo);
+                                long lagAuxSize = driver.getAuxVectorSize(lagRows);
+                                long lagAuxKeyAddrRaw = mapAppendColumnBuffer(columns.get(getSecondaryColumnIndex(i)), lagAuxOffset, lagAuxSize, false);
+                                long lagAuxKeyAddr = Math.abs(lagAuxKeyAddrRaw);
+
+                                long lagVarDataOffset = driver.getDataVectorOffset(lagAuxKeyAddr, 0);
+                                long lagVarDataSize = driver.getDataVectorSize(lagAuxKeyAddr, 0, lagRows - 1);
+                                long lagVarDataAddrRaw = mapAppendColumnBuffer(columns.get(getPrimaryColumnIndex(i)), lagVarDataOffset, lagVarDataSize, false);
+                                long lagVarDataAddr = Math.abs(lagVarDataAddrRaw);
+                                // Aux points into the var buffer as if it's mapped from 0 row.
+                                // Compensate the mapped with offset address of var buffer by subtracting lagVarDataOffset
+                                DedupColumnCommitAddresses.setO3DataAddressValues(addr, lagAuxKeyAddr, lagVarDataAddr - lagVarDataOffset, lagVarDataSize + lagVarDataOffset);
+                                DedupColumnCommitAddresses.setReservedValuesSet1(addr, lagAuxKeyAddrRaw, lagAuxOffset, lagAuxSize);
+                                DedupColumnCommitAddresses.setReservedValuesSet2(addr, lagVarDataAddrRaw, lagVarDataOffset);
+                            } else {
+                                DedupColumnCommitAddresses.setO3DataAddressValues(addr, DedupColumnCommitAddresses.NULL, DedupColumnCommitAddresses.NULL, 0);
+                            }
+                        }
                     }
                 }
+                assert dedupKeyIndex <= dedupColumnCommitAddresses.getColumnCount();
             }
             return Vect.dedupSortedTimestampIndexIntKeysChecked(
                     indexSrcAddr,
@@ -4561,17 +4634,25 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
                     indexDstAddr,
                     tempIndexAddr,
                     dedupKeyIndex,
-                    dedupColumnCommitAddresses.getAddress(dedupCommitAddr)
+                    DedupColumnCommitAddresses.getAddress(dedupCommitAddr)
             );
         } finally {
             if (dedupColumnCommitAddresses.getColumnCount() > 0 && lagRows > 0) {
                 // Release mapped column buffers for lag rows
                 for (int i = 0; i < dedupKeyIndex; i++) {
-                    long lagAddr = dedupColumnCommitAddresses.getColReserved1(dedupCommitAddr, i);
-                    long lagMemOffset = dedupColumnCommitAddresses.getColReserved2(dedupCommitAddr, i);
-                    long mapSize = dedupColumnCommitAddresses.getColReserved3(dedupCommitAddr, i);
+                    long lagAuxAddr = DedupColumnCommitAddresses.getColReserved1(dedupCommitAddr, i);
+                    long lagAuxMemOffset = DedupColumnCommitAddresses.getColReserved2(dedupCommitAddr, i);
+                    long mapAuxSize = DedupColumnCommitAddresses.getColReserved3(dedupCommitAddr, i);
 
-                    mapAppendColumnBufferRelease(lagAddr, lagMemOffset, mapSize);
+                    mapAppendColumnBufferRelease(lagAuxAddr, lagAuxMemOffset, mapAuxSize);
+
+                    long mapVarSize = DedupColumnCommitAddresses.getO3VarDataLen(dedupCommitAddr, i);
+                    if (mapVarSize > 0) {
+                        long lagVarAddr = DedupColumnCommitAddresses.getColReserved4(dedupCommitAddr, i);
+                        long lagVarMemOffset = DedupColumnCommitAddresses.getColReserved5(dedupCommitAddr, i);
+                        assert mapVarSize > lagVarMemOffset;
+                        mapAppendColumnBufferRelease(lagVarAddr, lagVarMemOffset, mapVarSize - lagVarMemOffset);
+                    }
                 }
             }
             dedupColumnCommitAddresses.clear();
@@ -5513,7 +5594,8 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
             long newPartitionSize,
             long oldPartitionSize,
             long partitionUpdateSinkAddr,
-            long dedupColSinkAddr
+            long dedupColSinkAddr,
+            boolean isParquet
     ) {
         long cursor = messageBus.getO3PartitionPubSeq().next();
         if (cursor > -1) {
@@ -5540,7 +5622,8 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
                     newPartitionSize,
                     oldPartitionSize,
                     partitionUpdateSinkAddr,
-                    dedupColSinkAddr
+                    dedupColSinkAddr,
+                    isParquet
             );
             messageBus.getO3PartitionPubSeq().done(cursor);
         } else {
@@ -5566,7 +5649,8 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
                     newPartitionSize,
                     oldPartitionSize,
                     partitionUpdateSinkAddr,
-                    dedupColSinkAddr
+                    dedupColSinkAddr,
+                    isParquet
             );
         }
     }
@@ -5674,9 +5758,18 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
                             .$("merged partition [table=`").utf8(tableToken.getTableName())
                             .$("`, ts=").$ts(partitionTimestamp)
                             .$(", txn=").$(txWriter.txn).I$();
-                    txWriter.updatePartitionSizeAndTxnByRawIndex(partitionIndexRaw, srcDataNewPartitionSize);
-                    partitionRemoveCandidates.add(partitionTimestamp, srcNameTxn);
-                    txWriter.bumpPartitionTableVersion();
+
+                    final long parquetFileSize = Unsafe.getUnsafe().getLong(blockAddress + 7 * Long.BYTES);
+                    if (parquetFileSize > -1) {
+                        // Since we're technically performing an "append" here,
+                        // there's no need to increment the txn or partition table version.
+                        txWriter.updatePartitionSizeByRawIndex(partitionIndexRaw, partitionTimestamp, srcDataNewPartitionSize);
+                        txWriter.setPartitionParquetFormat(partitionTimestamp, parquetFileSize);
+                    } else {
+                        txWriter.updatePartitionSizeAndTxnByRawIndex(partitionIndexRaw, srcDataNewPartitionSize);
+                        partitionRemoveCandidates.add(partitionTimestamp, srcNameTxn);
+                        txWriter.bumpPartitionTableVersion();
+                    }
                 } else {
                     if (partitionTimestamp != lastPartitionTimestamp) {
                         txWriter.bumpPartitionTableVersion();
@@ -6233,7 +6326,8 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
                     final long newPartitionSize = srcDataMax + srcOooBatchRowSize;
 
                     // check partition read-only state
-                    final boolean partitionIsReadOnly = txWriter.isPartitionReadOnlyByPartitionTimestamp(partitionTimestamp);
+                    final boolean partitionIsReadOnly = partitionIndexRaw > -1 && txWriter.isPartitionReadOnlyByRawIndex(partitionIndexRaw);
+                    final boolean isParquet = partitionIndexRaw > -1 && txWriter.isPartitionParquetByRawIndex(partitionIndexRaw);
 
                     pCount++;
 
@@ -6396,7 +6490,8 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
                                 newPartitionSize,
                                 srcDataMax,
                                 partitionUpdateSinkAddr,
-                                dedupColSinkAddr
+                                dedupColSinkAddr,
+                                isParquet
                         );
                     }
                 } catch (CairoException | CairoError e) {
@@ -7772,6 +7867,8 @@ public class TableWriter implements TableWriterAPI, MetadataService, Closeable {
         processPartitionRemoveCandidates();
 
         LOG.info().$("truncated [name=").utf8(tableToken.getTableName()).I$();
+
+        engine.metadataCacheHydrateTable(metadata, true, true);
     }
 
     private void truncateColumns() {

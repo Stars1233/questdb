@@ -85,6 +85,7 @@ public enum PropertyKey implements ConfigPropertyKey {
     CAIRO_SQL_HASH_JOIN_LIGHT_VALUE_PAGE_SIZE("cairo.sql.hash.join.light.value.page.size"),
     CAIRO_SQL_HASH_JOIN_LIGHT_VALUE_MAX_PAGES("cairo.sql.hash.join.light.value.max.pages"),
     CAIRO_SQL_ASOF_JOIN_LOOKAHEAD("cairo.sql.asof.join.lookahead"),
+    CAIRO_SQL_ASOF_JOIN_FAST("cairo.sql.asof.join.fast"),
     CAIRO_SQL_SORT_VALUE_PAGE_SIZE("cairo.sql.sort.value.page.size"),
     CAIRO_SQL_SORT_VALUE_MAX_PAGES("cairo.sql.sort.value.max.pages"),
     CAIRO_WORK_STEAL_TIMEOUT_NANOS("cairo.work.steal.timeout.nanos"),
@@ -481,7 +482,25 @@ public enum PropertyKey implements ConfigPropertyKey {
     DEBUG_CAIRO_O3_COLUMN_MEMORY_SIZE("debug.cairo.o3.column.memory.size", false, true),
     CAIRO_DEFAULT_SEQ_PART_TXN_COUNT("cairo.default.sequencer.part.txn.count"),
     POSTHOG_API_KEY("posthog.api.key"),
-    POSTHOG_ENABLED("posthog.enabled");
+    POSTHOG_ENABLED("posthog.enabled"),
+    LOG_LEVEL_VERBOSE("log.level.verbose"),
+    LOG_SQL_QUERY_PROGRESS_EXE("log.sql.query.progress.exe"),
+    CAIRO_PARTITION_ENCODER_PARQUET_VERSION("cairo.partition.encoder.parquet.version"),
+    CAIRO_PARTITION_ENCODER_PARQUET_STATISTICS_ENABLED("cairo.partition.encoder.parquet.statistics.enabled"),
+    CAIRO_PARTITION_ENCODER_PARQUET_COMPRESSION_CODEC("cairo.partition.encoder.parquet.compression.codec"),
+    CAIRO_PARTITION_ENCODER_PARQUET_COMPRESSION_LEVEL("cairo.partition.encoder.parquet.compression.level"),
+    CAIRO_PARTITION_ENCODER_PARQUET_ROW_GROUP_SIZE("cairo.partition.encoder.parquet.row.group.size"),
+    CAIRO_PARTITION_ENCODER_PARQUET_DATA_PAGE_SIZE("cairo.partition.encoder.parquet.data.page.size"),
+    HTTP_MIN_SEND_BUFFER_SIZE("http.min.send.buffer.size"),
+    HTTP_MIN_RECEIVE_BUFFER_SIZE("http.min.receive.buffer.size"),
+    HTTP_MIN_CONNECTION_STRING_POOL_CAPACITY("http.min.connection.string.pool.capacity"),
+    HTTP_MIN_CONNECTION_POOL_INITIAL_CAPACITY("http.min.connection.pool.initial.capacity"),
+    HTTP_MIN_MULTIPART_HEADER_BUFFER_SIZE("http.min.multipart.header.buffer.size"),
+    HTTP_MIN_MULTIPART_IDLE_SPIN_COUNT("http.min.multipart.idle.spin.count"),
+    HTTP_MIN_ALLOW_DEFLATE_BEFORE_SEND("http.min.allow.deflate.before.send"),
+    HTTP_MIN_SERVER_KEEP_ALIVE("http.min.server.keep.alive"),
+    HTTP_MIN_REQUEST_HEADER_BUFFER_SIZE("http.min.request.header.buffer.size"),
+    ;
 
     private static final Map<String, PropertyKey> nameMapping;
     private final boolean debug;

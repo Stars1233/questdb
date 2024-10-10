@@ -24,10 +24,26 @@
 
 package io.questdb.test;
 
-import io.questdb.*;
-import io.questdb.cairo.*;
+import io.questdb.BuildInformation;
+import io.questdb.BuildInformationHolder;
+import io.questdb.PropServerConfiguration;
+import io.questdb.PropertyKey;
+import io.questdb.ServerConfigurationException;
+import io.questdb.cairo.CairoConfiguration;
+import io.questdb.cairo.CairoConfigurationWrapper;
+import io.questdb.cairo.ColumnType;
+import io.questdb.cairo.CommitMode;
+import io.questdb.cairo.PartitionBy;
+import io.questdb.cairo.SecurityContext;
+import io.questdb.cairo.SqlJitMode;
+import io.questdb.cairo.TableUtils;
 import io.questdb.cutlass.json.JsonException;
-import io.questdb.cutlass.line.*;
+import io.questdb.cutlass.line.LineHourTimestampAdapter;
+import io.questdb.cutlass.line.LineMicroTimestampAdapter;
+import io.questdb.cutlass.line.LineMilliTimestampAdapter;
+import io.questdb.cutlass.line.LineMinuteTimestampAdapter;
+import io.questdb.cutlass.line.LineNanoTimestampAdapter;
+import io.questdb.cutlass.line.LineSecondTimestampAdapter;
 import io.questdb.cutlass.pgwire.DefaultPGWireConfiguration;
 import io.questdb.log.Log;
 import io.questdb.log.LogFactory;
@@ -35,7 +51,15 @@ import io.questdb.network.EpollFacadeImpl;
 import io.questdb.network.IOOperation;
 import io.questdb.network.NetworkFacadeImpl;
 import io.questdb.network.SelectFacadeImpl;
-import io.questdb.std.*;
+import io.questdb.std.Chars;
+import io.questdb.std.Files;
+import io.questdb.std.FilesFacade;
+import io.questdb.std.FilesFacadeImpl;
+import io.questdb.std.Misc;
+import io.questdb.std.NanosecondClockImpl;
+import io.questdb.std.Numbers;
+import io.questdb.std.Os;
+import io.questdb.std.Rnd;
 import io.questdb.std.datetime.microtime.MicrosecondClockImpl;
 import io.questdb.std.datetime.millitime.MillisecondClockImpl;
 import io.questdb.std.str.StringSink;
@@ -43,7 +67,12 @@ import io.questdb.std.str.Utf8String;
 import io.questdb.test.tools.TestUtils;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
-import org.junit.*;
+import org.junit.AfterClass;
+import org.junit.Assert;
+import org.junit.Assume;
+import org.junit.BeforeClass;
+import org.junit.ClassRule;
+import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 import java.io.File;
@@ -79,6 +108,8 @@ public class PropServerConfigurationTest {
         Properties properties = new Properties();
         PropServerConfiguration configuration = newPropServerConfiguration(root, properties, null, new BuildInformationHolder());
         FilesFacade ff = configuration.getCairoConfiguration().getFilesFacade();
+
+        Assert.assertFalse(configuration.getCairoConfiguration().getLogLevelVerbose());
         Assert.assertEquals(4, configuration.getHttpServerConfiguration().getHttpContextConfiguration().getConnectionPoolInitialCapacity());
         Assert.assertEquals(128, configuration.getHttpServerConfiguration().getHttpContextConfiguration().getConnectionStringPoolCapacity());
         Assert.assertEquals(512, configuration.getHttpServerConfiguration().getHttpContextConfiguration().getMultipartHeaderBufferSize());
@@ -159,6 +190,8 @@ public class PropServerConfigurationTest {
         Assert.assertEquals(2_000_000, configuration.getCairoConfiguration().getCircuitBreakerConfiguration().getCircuitBreakerThrottle());
         Assert.assertEquals(64, configuration.getCairoConfiguration().getCircuitBreakerConfiguration().getBufferSize());
 
+        Assert.assertTrue(configuration.getCairoConfiguration().getLogSqlQueryProgressExe());
+
         Assert.assertEquals(CommitMode.NOSYNC, configuration.getCairoConfiguration().getCommitMode());
         Assert.assertEquals(2097152, configuration.getCairoConfiguration().getSqlCopyBufferSize());
         Assert.assertEquals(32, configuration.getCairoConfiguration().getCopyPoolCapacity());
@@ -167,7 +200,7 @@ public class PropServerConfigurationTest {
         Assert.assertEquals(256, configuration.getCairoConfiguration().getDefaultSymbolCapacity());
         Assert.assertEquals(30, configuration.getCairoConfiguration().getFileOperationRetryCount());
         Assert.assertEquals(300000, configuration.getCairoConfiguration().getIdleCheckInterval());
-        Assert.assertEquals(128, configuration.getCairoConfiguration().getInactiveReaderMaxOpenPartitions());
+        Assert.assertEquals(10000, configuration.getCairoConfiguration().getInactiveReaderMaxOpenPartitions());
         Assert.assertEquals(120_000, configuration.getCairoConfiguration().getInactiveReaderTTL());
         Assert.assertEquals(600_000, configuration.getCairoConfiguration().getInactiveWriterTTL());
         Assert.assertEquals(256, configuration.getCairoConfiguration().getIndexValueBlockSize());
@@ -176,8 +209,8 @@ public class PropServerConfigurationTest {
         Assert.assertEquals(509, configuration.getCairoConfiguration().getDetachedMkDirMode());
         Assert.assertEquals(8, configuration.getCairoConfiguration().getBindVariablePoolSize());
         Assert.assertEquals(32, configuration.getCairoConfiguration().getQueryRegistryPoolSize());
-        Assert.assertEquals(16, configuration.getCairoConfiguration().getCountDistinctCapacity());
-        Assert.assertEquals(0.7, configuration.getCairoConfiguration().getCountDistinctLoadFactor(), 0.000001);
+        Assert.assertEquals(3, configuration.getCairoConfiguration().getCountDistinctCapacity());
+        Assert.assertEquals(0.75, configuration.getCairoConfiguration().getCountDistinctLoadFactor(), 0.000001);
 
         Assert.assertEquals(100000, configuration.getCairoConfiguration().getParallelIndexThreshold());
         Assert.assertEquals(10, configuration.getCairoConfiguration().getReaderPoolMaxSegments());
@@ -196,16 +229,17 @@ public class PropServerConfigurationTest {
         Assert.assertEquals(32, configuration.getCairoConfiguration().getSqlUnorderedMapMaxEntrySize());
         Assert.assertEquals(1024, configuration.getCairoConfiguration().getSqlModelPoolCapacity());
         Assert.assertEquals(10_000, configuration.getCairoConfiguration().getSqlMaxNegativeLimit());
-        Assert.assertEquals(4 * 1024 * 1024, configuration.getCairoConfiguration().getSqlSortKeyPageSize());
+        Assert.assertEquals(128 * 1024, configuration.getCairoConfiguration().getSqlSortKeyPageSize());
         Assert.assertEquals(Integer.MAX_VALUE, configuration.getCairoConfiguration().getSqlSortKeyMaxPages());
-        Assert.assertEquals(8 * 1024 * 1024, configuration.getCairoConfiguration().getSqlSortLightValuePageSize());
+        Assert.assertEquals(128 * 1024, configuration.getCairoConfiguration().getSqlSortLightValuePageSize());
         Assert.assertEquals(Integer.MAX_VALUE, configuration.getCairoConfiguration().getSqlSortLightValueMaxPages());
         Assert.assertEquals(16 * 1024 * 1024, configuration.getCairoConfiguration().getSqlHashJoinValuePageSize());
         Assert.assertEquals(Integer.MAX_VALUE, configuration.getCairoConfiguration().getSqlHashJoinValueMaxPages());
         Assert.assertEquals(1000, configuration.getCairoConfiguration().getSqlLatestByRowCount());
-        Assert.assertEquals(1024 * 1024, configuration.getCairoConfiguration().getSqlHashJoinLightValuePageSize());
+        Assert.assertEquals(128 * 1024, configuration.getCairoConfiguration().getSqlHashJoinLightValuePageSize());
         Assert.assertEquals(Integer.MAX_VALUE, configuration.getCairoConfiguration().getSqlHashJoinLightValueMaxPages());
         Assert.assertEquals(100, configuration.getCairoConfiguration().getSqlAsOfJoinLookAhead());
+        Assert.assertTrue(configuration.getCairoConfiguration().useFastAsOfJoin());
         Assert.assertEquals(16 * 1024 * 1024, configuration.getCairoConfiguration().getSqlSortValuePageSize());
         Assert.assertEquals(Integer.MAX_VALUE, configuration.getCairoConfiguration().getSqlSortValueMaxPages());
         Assert.assertEquals(10000, configuration.getCairoConfiguration().getWorkStealTimeoutNanos());
@@ -706,7 +740,7 @@ public class PropServerConfigurationTest {
         Properties properties = new Properties();
 
         PropServerConfiguration configuration = newPropServerConfiguration(root, properties, null, new BuildInformationHolder());
-        Assert.assertNull(configuration.getCairoConfiguration().getSqlCopyInputWorkRoot());
+        Assert.assertTrue(Chars.endsWith(configuration.getCairoConfiguration().getSqlCopyInputWorkRoot(), "tmp"));
 
         //direct cases
         assertInputWorkRootCantBeSetTo(properties, root);
@@ -728,7 +762,8 @@ public class PropServerConfigurationTest {
         Properties properties = new Properties();
 
         PropServerConfiguration configuration = newPropServerConfiguration(root, properties, null, new BuildInformationHolder());
-        Assert.assertNull(configuration.getCairoConfiguration().getSqlCopyInputWorkRoot());
+        Assert.assertTrue(Chars.endsWith(configuration.getCairoConfiguration().getSqlCopyInputWorkRoot(), "tmp"));
+
         assertInputWorkRootCantBeSetTo(properties, configuration.getCairoConfiguration().getRoot().toUpperCase());
         assertInputWorkRootCantBeSetTo(properties, configuration.getCairoConfiguration().getRoot().toLowerCase());
     }
@@ -1380,6 +1415,7 @@ public class PropServerConfigurationTest {
         Assert.assertEquals(2 * 1024 * 1024, configuration.getSqlHashJoinLightValuePageSize());
         Assert.assertEquals(1025, configuration.getSqlHashJoinLightValueMaxPages());
         Assert.assertEquals(42, configuration.getSqlAsOfJoinLookAhead());
+        Assert.assertFalse(configuration.useFastAsOfJoin());
         Assert.assertEquals(4 * 1024 * 1024, configuration.getSqlSortValuePageSize());
         Assert.assertEquals(1028, configuration.getSqlSortValueMaxPages());
         Assert.assertEquals(1000000, configuration.getWorkStealTimeoutNanos());

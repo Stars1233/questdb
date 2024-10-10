@@ -765,12 +765,6 @@ public class SqlParser {
                     }
                     if (colIndex == model.getTimestampIndex()) {
                         timestampColumnFound = true;
-                    } else {
-                        int columnType = model.getColumnType(colIndex);
-                        if (ColumnType.isVarSize(columnType)) {
-                            throw SqlException.position(lexer.lastTokenPosition()).put("deduplicate key column can only be fixed size column [column=").put(columnName)
-                                    .put(", type=").put(ColumnType.nameOf(columnType)).put(']');
-                        }
                     }
                     model.setDedupKeyFlag(colIndex);
 
@@ -2832,17 +2826,14 @@ public class SqlParser {
     }
 
     private int toColumnType(GenericLexer lexer, CharSequence tok) throws SqlException {
-        final short type = ColumnType.tagOf(tok);
-        if (type == -1) {
-            throw SqlException.$(lexer.lastTokenPosition(), "unsupported column type: ").put(tok);
-        }
-        if (ColumnType.GEOHASH == type) {
+        final short typeTag = SqlUtil.toPersistedTypeTag(tok, lexer.lastTokenPosition());
+        if (ColumnType.GEOHASH == typeTag) {
             expectTok(lexer, '(');
             final int bits = GeoHashUtil.parseGeoHashBits(lexer.lastTokenPosition(), 0, expectLiteral(lexer).token);
             expectTok(lexer, ')');
             return ColumnType.getGeoHashTypeWithBits(bits);
         }
-        return type;
+        return typeTag;
     }
 
     private @NotNull CharSequence tok(GenericLexer lexer, String expectedList) throws SqlException {

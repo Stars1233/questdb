@@ -404,12 +404,9 @@ public class SqlCompilerImpl implements SqlCompiler, Closeable, SqlParserCallbac
         CharSequence tok;
         tok = expectToken(lexer, "column type");
 
-        int type = ColumnType.tagOf(tok);
-        if (type == -1) {
-            throw SqlException.$(lexer.lastTokenPosition(), "invalid type");
-        }
+        int columnType = SqlUtil.toPersistedTypeTag(tok, lexer.lastTokenPosition());
 
-        if (type == ColumnType.GEOHASH) {
+        if (columnType == ColumnType.GEOHASH) {
             tok = SqlUtil.fetchNext(lexer);
             if (tok == null || tok.charAt(0) != '(') {
                 throw SqlException.position(lexer.getPosition()).put("missing GEOHASH precision");
@@ -428,7 +425,7 @@ public class SqlCompilerImpl implements SqlCompiler, Closeable, SqlParserCallbac
                     throw SqlException.position(lexer.getPosition())
                             .put("invalid GEOHASH type literal, expected ')'");
                 }
-                type = ColumnType.getGeoHashTypeWithBits(geoHashBits);
+                columnType = ColumnType.getGeoHashTypeWithBits(geoHashBits);
             } else {
                 throw SqlException.position(lexer.lastTokenPosition())
                         .put("missing GEOHASH precision");
@@ -442,7 +439,7 @@ public class SqlCompilerImpl implements SqlCompiler, Closeable, SqlParserCallbac
         final boolean indexed;
 
         if (
-                ColumnType.isSymbol(type)
+                ColumnType.isSymbol(columnType)
                         && tok != null
                         && !Chars.equals(tok, ',')
                         && !Chars.equals(tok, ';')
@@ -525,7 +522,7 @@ public class SqlCompilerImpl implements SqlCompiler, Closeable, SqlParserCallbac
         addColumn.addColumnToList(
                 columnName,
                 columnNamePosition,
-                type,
+                columnType,
                 Numbers.ceilPow2(symbolCapacity),
                 cache,
                 indexed,
@@ -533,7 +530,7 @@ public class SqlCompilerImpl implements SqlCompiler, Closeable, SqlParserCallbac
                 false
         );
         lexer.unparseLast();
-        return type;
+        return columnType;
     }
 
     private void alterTable(SqlExecutionContext executionContext) throws SqlException {
@@ -914,26 +911,6 @@ public class SqlCompilerImpl implements SqlCompiler, Closeable, SqlParserCallbac
         );
         int existingColumnType = tableMetadata.getColumnType(columnIndex);
         int newColumnType = addColumnWithType(changeColumn, columnName, columnNamePosition);
-        if (tableMetadata.isWalEnabled()
-                && ColumnType.isVarSize(newColumnType)
-                && !ColumnType.isVarSize(existingColumnType)
-        ) {
-            // This may remove deduplication from the column since var len columns don't support deduplication.
-            // Check for it.
-            try (TableReader reader = executionContext.getReader(tableToken)) {
-                TableReaderMetadata meta = reader.getMetadata();
-                for (int ci = 0, n = meta.getColumnCount(); ci < n; ci++) {
-                    if (meta.getWriterIndex(ci) == columnIndex) {
-                        if (meta.isDedupKey(ci)) {
-                            throw SqlException.$(lexer.lastTokenPosition(), "cannot change type of deduplicated key column '").put(columnName)
-                                    .put("' to variable size type '").put(ColumnType.nameOf(newColumnType))
-                                    .put("', deduplication is only supported for fixed size types");
-                        }
-                    }
-                }
-            }
-        }
-
         CharSequence tok = SqlUtil.fetchNext(lexer);
         if (tok != null && !isSemicolon(tok)) {
             throw SqlException.$(lexer.lastTokenPosition(), "unexpected token [").put(tok).put("] while trying to change column type");
@@ -1084,12 +1061,6 @@ public class SqlCompilerImpl implements SqlCompiler, Closeable, SqlParserCallbac
 
                 if (colIndex == tableMetadata.getTimestampIndex()) {
                     tsIncludedInDedupColumns = true;
-                } else {
-                    int columnType = tableMetadata.getColumnType(colIndex);
-                    if (ColumnType.isVarSize(columnType) || columnType < 0) {
-                        throw SqlException.position(lexer.lastTokenPosition()).put("deduplicate key column can only be fixed size column [column=").put(columnName)
-                                .put(", type=").put(ColumnType.nameOf(columnType)).put(']');
-                    }
                 }
                 setDedup.setDedupKeyFlag(tableMetadata.getWriterIndex(colIndex));
 
@@ -1604,7 +1575,8 @@ public class SqlCompilerImpl implements SqlCompiler, Closeable, SqlParserCallbac
         }
         final CharSequence tok = SqlUtil.fetchNext(lexer);
         if (tok == null) {
-            throw SqlException.$(0, "empty query");
+            compiledQuery.ofEmpty();
+            return;
         }
 
         final KeywordBasedExecutor executor = keywordBasedExecutors.get(tok);
@@ -1979,7 +1951,8 @@ public class SqlCompilerImpl implements SqlCompiler, Closeable, SqlParserCallbac
                         engine.getConfiguration().getRoot(),
                         engine.getDdlListener(tableToken),
                         engine.getCheckpointStatus(),
-                        engine.getMetrics()
+                        engine.getMetrics(),
+                        engine
                 );
             } else {
                 writerAPI = engine.getTableWriterAPI(tableToken, "create as select");
@@ -2926,7 +2899,7 @@ public class SqlCompilerImpl implements SqlCompiler, Closeable, SqlParserCallbac
                                 engine.unlockReaders(tableToken);
                             }
                         } else {
-                            throw SqlException.$(0, "there is an active query against '").put(tableToken).put("'. Try again.");
+                            throw SqlException.$(0, "there is an active query against '").put(tableToken.getTableName()).put("'. Try again.");
                         }
                     }
                 } catch (CairoException | CairoError e) {

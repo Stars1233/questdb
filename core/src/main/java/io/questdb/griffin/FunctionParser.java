@@ -138,6 +138,9 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor, Mutab
                 return UuidColumn.newInstance(index);
             case ColumnType.IPv4:
                 return IPv4Column.newInstance(index);
+            case ColumnType.INTERVAL:
+                // we cannot use a pooled IntervalColumn instance, because it is not thread-safe
+                return new IntervalColumn(index);
             default:
                 throw SqlException.position(position)
                         .put("unsupported column type ")
@@ -488,7 +491,7 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor, Mutab
         final int position = node.position;
         Function function;
         try {
-            LOG.debug().$("call ").$(node).$(" -> ").$(factory.getSignature()).$("[factory=").$(factory).$(']').$();
+            LOG.debug().$("call ").$(node).$(" -> ").$(factory.getSignature()).$("[factory=").$(factory).I$();
             function = factory.newInstance(position, args, argPositions, configuration, sqlExecutionContext);
         } catch (SqlException | ImplicitCastException e) {
             Misc.freeObjList(args);
@@ -502,8 +505,8 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor, Mutab
         if (function == null) {
             LOG.error().$("NULL function")
                     .$(" [signature=").$(factory.getSignature())
-                    .$(", class=").$(factory.getClass().getName()).$(']')
-                    .$();
+                    .$(", class=").$(factory.getClass().getName())
+                    .I$();
             Misc.freeObjList(args);
             throw SqlException.position(position).put("bad function factory (NULL), check log");
         }
@@ -579,6 +582,7 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor, Mutab
                         || columnType == ColumnType.UUID
                         || columnType == ColumnType.IPv4
                         || columnType == ColumnType.VARCHAR
+                        || columnType == ColumnType.INTERVAL
         ) {
             return Constants.getTypeConstant(columnType);
         }
@@ -907,6 +911,8 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor, Mutab
                 }
             } else if (argTypeTag == ColumnType.UUID && sigArgTypeTag == ColumnType.STRING) {
                 args.setQuick(k, new CastUuidToStrFunctionFactory.Func(arg));
+            } else if (argTypeTag == ColumnType.INTERVAL && sigArgTypeTag == ColumnType.STRING) {
+                args.setQuick(k, new CastIntervalToStrFunctionFactory.Func(arg));
             }
         }
         return checkAndCreateFunction(candidate, args, argPositions, node, configuration);
@@ -999,7 +1005,13 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor, Mutab
                 if (function instanceof IntConstant) {
                     return function;
                 } else {
-                    return IntConstant.newInstance(function.getInt(null));
+                    int intConst = function.getInt(null);
+                    long longConst = function.getLong(null);
+                    if (intConst == Numbers.INT_NULL || intConst == longConst) {
+                        return IntConstant.newInstance(intConst);
+                    } else {
+                        return new LongConstant(longConst);
+                    }
                 }
             case ColumnType.BOOLEAN:
                 if (function instanceof BooleanConstant) {
